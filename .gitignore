@@ -1,0 +1,14 @@
+.vercel
+version.json
+
+# All sound effects are paid Splice samples, and all music tracks are Suno-
+# generated - neither license permits redistributing the raw files. See
+# README's Credits/License section. Anyone cloning this repo needs to
+# supply their own audio at the same paths (src/sound.js) for sound/music to
+# play - the game degrades gracefully without them (see sound.js's
+# initSound, which already treats a missing/failed clip as a soft warning,
+# not a crash, and playRandomTrack, which just fails silently on a missing
+# track).
+assets/sounds/*.mp3
+assets/music/*.mp3
+.env*.local
