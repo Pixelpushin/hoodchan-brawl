@@ -1,0 +1,65 @@
+name: Build, attest, and deploy
+
+# Closes a real gap in the site-verification story (see
+# docs/SITE-INTEGRITY-RESEARCH.md): the footer/version.json already prove
+# which commit a deploy CLAIMS to be running, but nothing stopped the host
+# from lying about it - Vercel builds on its own infra, so a GitHub
+# attestation of what GitHub built never actually covered what Vercel
+# served. This workflow builds in GitHub's own environment, gets a signed
+# provenance attestation for that exact build output, then deploys that
+# same prebuilt output to Vercel with --prebuilt so nothing can diverge
+# between "what was attested" and "what's live" after this point.
+#
+# Audio (licensed Splice/Suno content, gitignored - see README's License
+# section) is NOT in this checkout, by design - it's served from Vercel
+# Blob instead (src/sound.js's AUDIO_BASE), fully decoupled from this
+# pipeline. No manual deploy-from-local-disk step needed for it anymore.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel project settings
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_ouRkOrPZM1iixqwAQlZ0kdnk
+          VERCEL_PROJECT_ID: prj_9ppd42yUwRsd6du5WhrSAmkwuCdf
+
+      - name: Build (runs scripts/stamp-version.sh via vercel.json)
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          # actions/checkout leaves the runner in a detached HEAD, which
+          # breaks Vercel CLI's own local-git auto-detection for these two
+          # (that auto-detection is what made this "just work" during local
+          # `vercel --prod` deploys all along - CI has no branch ref to read
+          # it from). Setting them explicitly from GitHub's own context
+          # instead of relying on Vercel to guess.
+          VERCEL_GIT_COMMIT_SHA: ${{ github.sha }}
+          VERCEL_GIT_COMMIT_REF: ${{ github.ref_name }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ".vercel/output/**"
+
+      - name: Deploy the exact attested build
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

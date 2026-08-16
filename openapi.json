@@ -1,0 +1,110 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hood Vs Hood API",
+    "version": "1.0.0",
+    "description": "Ambient match-record data for Hood Vs Hood, a browser fighting game built on OnChainHoodies (https://onchainhoodies.xyz). Tracks how many times each Hoodie token ID has fought and won/lost in-game. Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/hoodies-fight"
+  },
+  "servers": [{ "url": "https://hoodie.wtf" }],
+  "paths": {
+    "/api/hoodie/{tokenId}/stats": {
+      "get": {
+        "operationId": "getHoodieStats",
+        "summary": "Get a Hoodie's in-game fight record",
+        "parameters": [
+          {
+            "name": "tokenId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0, "maximum": 5999 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fight record for one Hoodie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokenId": { "type": "integer" },
+                    "wins": { "type": "integer" },
+                    "losses": { "type": "integer" },
+                    "matches": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid tokenId" }
+        }
+      }
+    },
+    "/api/matches/recent": {
+      "get": {
+        "operationId": "getRecentMatches",
+        "summary": "Get the most recent completed matches across all Hoodies",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent match feed, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "matches": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tokenId": { "type": "integer" },
+                          "opponentTokenId": { "type": ["integer", "null"] },
+                          "result": { "type": "string", "enum": ["win", "loss"] },
+                          "ts": { "type": "integer", "description": "Unix ms timestamp" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/match-result": {
+      "post": {
+        "operationId": "postMatchResult",
+        "summary": "Record the outcome of a completed match for one Hoodie",
+        "description": "Called by the game client itself when a match ends. Unauthenticated - not designed to resist abuse, treat resulting stats as an ambient/fun signal rather than a verified record.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["tokenId", "result"],
+                "properties": {
+                  "tokenId": { "type": "integer", "minimum": 0, "maximum": 5999 },
+                  "opponentTokenId": { "type": ["integer", "null"], "minimum": 0, "maximum": 5999 },
+                  "result": { "type": "string", "enum": ["win", "loss"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Recorded" },
+          "400": { "description": "Invalid body" }
+        }
+      }
+    }
+  }
+}

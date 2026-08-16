@@ -1,0 +1,5 @@
+{
+  "buildCommand": "sh scripts/stamp-version.sh",
+  "installCommand": null,
+  "outputDirectory": "."
+}

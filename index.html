@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hood Vs Hood</title>
+  <link rel="icon" type="image/png" href="assets/branding/logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1><img src="assets/branding/logo.png" alt="" id="logo-mark" />HOOD VS HOOD</h1>
+
+  <div id="wallet-chip" class="hidden">
+    <span id="wallet-chip-address"></span>
+    <button id="disconnect-btn">Disconnect</button>
+  </div>
+
+  <div id="setup">
+    <video id="setup-bg" autoplay loop muted playsinline>
+      <source src="assets/backgrounds/setup-bg.mp4" type="video/mp4" />
+    </video>
+    <div id="setup-content">
+      <p class="hype" id="hype">Choose how you want to play:</p>
+      <div id="play-options">
+        <div class="play-option" id="local-play">
+          <button id="start-btn">PLAY FREE</button>
+          <p class="option-desc">No wallet needed. Pick two fighters and play now.</p>
+        </div>
+
+        <div class="play-option" id="wallet-play">
+          <button id="connect-wallet-btn">CONNECT WALLET</button>
+          <p class="option-desc">Use your own Hoodie NFT to fight.</p>
+          <p id="wallet-status"></p>
+          <a id="opensea-btn" class="hidden" href="https://opensea.io/collection/onchainhoodies-" target="_blank" rel="noopener noreferrer">
+            GET A HOODIE ON OPENSEA
+          </a>
+          <button id="free-play-btn" class="hidden">PLAY FREE INSTEAD</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="select-screen" class="hidden">
+    <div id="select-bg"></div>
+    <div id="select-content">
+      <div id="select-fighters">
+        <div class="fighter-display" id="p1-display">
+          <div class="portrait-frame"><canvas id="p1-portrait" width="800" height="360"></canvas></div>
+          <div class="fighter-label" id="p1-select-label">CHOOSE YOUR FIGHTER</div>
+        </div>
+        <div id="vs-column">
+          <div id="vs-mark">VS</div>
+          <!-- Single centered button for today's one-player mode (P2 is
+               always AI/random-sample). A future two-player lobby gets its
+               own layout here instead - two independent ready-up buttons
+               side by side in this same center column, one per real
+               player - not a resize of this one. -->
+          <button id="ready-btn" disabled>START BATTLE</button>
+          <label class="practice-toggle" title="Opponent won't fight back">
+            <input id="practice-toggle" type="checkbox" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Practice mode</span>
+          </label>
+        </div>
+        <div class="fighter-display" id="p2-display">
+          <div class="portrait-frame"><canvas id="p2-portrait" width="800" height="360"></canvas></div>
+          <div class="fighter-label" id="p2-select-label">CHOOSE YOUR OPPONENT</div>
+        </div>
+      </div>
+      <div id="select-panels">
+        <div class="select-panel" id="p1-panel">
+          <div class="panel-grid" id="p1-grid"></div>
+          <div class="panel-pagination" id="p1-pagination"></div>
+        </div>
+        <div class="select-panel" id="p2-panel">
+          <div class="panel-grid" id="p2-grid"></div>
+          <div class="panel-pagination" id="p2-pagination"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="arena" class="hidden">
+    <button id="exit-match-btn" class="hidden">EXIT</button>
+    <div id="canvas-stage">
+      <div id="canvas-wrap">
+        <canvas id="canvas" width="800" height="360"></canvas>
+        <!-- Overlaid directly on the game view rather than sitting in its
+             own strip above the canvas - standard fighting-game HUD
+             placement, and it means the canvas itself can actually use the
+             full screen instead of giving up a fixed slice of height to
+             make room above it. Each side is its own PFP + name-over-bars
+             group (MK/Injustice style) instead of a bare pair of bars with
+             the name floating in an unrelated row below - the name now
+             reads unambiguously as belonging to the fighter right beside
+             it, and the circular portrait gives an instant visual anchor. -->
+        <div class="hud">
+          <div class="fighter-hud" id="p1-hud">
+            <img class="pfp" id="p1-pfp" alt="" />
+            <div class="bars-col">
+              <div class="fighter-name" id="p1-name"></div>
+              <div class="healthbar"><div id="p1-health" class="health-fill"></div></div>
+              <div class="powerbar"><div id="p1-power" class="power-fill"></div></div>
+            </div>
+          </div>
+          <div class="fighter-hud fighter-hud-flip" id="p2-hud">
+            <div class="bars-col">
+              <div class="fighter-name" id="p2-name"></div>
+              <div class="healthbar"><div id="p2-health" class="health-fill"></div></div>
+              <div class="powerbar"><div id="p2-power" class="power-fill"></div></div>
+            </div>
+            <img class="pfp" id="p2-pfp" alt="" />
+          </div>
+        </div>
+        <div class="names">
+          <span id="round-info">ROUND 1 &middot; 0 - 0</span>
+        </div>
+        <!-- Below the round-info line, not inline with the health bars -
+             sat centered between the bars before, which put it in the same
+             cramped strip as everything else at the top of the screen. -->
+        <div id="timer">60</div>
+        <!-- Reused for the post-round victory quote too (game.js's endRound) -
+             a real opaque speech bubble above the winner's own head stays
+             readable over any arena background, unlike floating glow text. -->
+        <div id="taunt-p1" class="taunt hidden"></div>
+        <div id="taunt-p2" class="taunt hidden"></div>
+        <div id="countdown" class="hidden"></div>
+        <div id="result" class="hidden">
+          <div id="result-title"></div>
+          <div id="result-actions" class="hidden">
+            <button id="result-again" class="hidden">PLAY AGAIN</button>
+            <button id="result-back">BACK TO MENU</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <button id="controls-info-btn" aria-label="Controls &amp; tips" title="Controls &amp; tips">?</button>
+    <div id="controls-panel">
+      <h3 class="panel-heading">Controls</h3>
+      <ul class="key-list">
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">A</kbd><kbd class="key-cap">D</kbd></span>
+          <span class="key-label">Move</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap key-cap-wide">Space</kbd></span>
+          <span class="key-label">Jump</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">S</kbd></span>
+          <span class="key-label">Crouch</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">C</kbd></span>
+          <span class="key-label">Block</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">F</kbd></span>
+          <span class="key-label">Punch</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">G</kbd></span>
+          <span class="key-label">Kick</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">R</kbd></span>
+          <span class="key-label">Special</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">W</kbd></span>
+          <span class="key-label">Uppercut</span>
+        </li>
+        <li class="key-row">
+          <span class="key-caps"><kbd class="key-cap">E</kbd></span>
+          <span class="key-label">Slide</span>
+        </li>
+      </ul>
+      <h3 class="panel-heading">Tips</h3>
+      <ul class="tips-list">
+        <li>Punch builds power; kick and special spend it, everything else is free</li>
+        <li>Crouch ducks kicks and high specials (bolt, high kick)</li>
+        <li>Ground attacks (rat rush, sweep kick, slides) can only be jumped</li>
+        <li>Block stops punch/kick but not specials or slides</li>
+        <li>Uppercut punishes a jump-in up close</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer id="site-footer">
+    <a href="https://x.com/PixelHerosNFT" target="_blank" rel="noopener noreferrer" class="social-link x-link" aria-label="Follow on X">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"/></svg>
+    </a>
+    <a href="https://github.com/Pixelpushin/hoodies-fight" target="_blank" rel="noopener noreferrer" class="social-link github-link" aria-label="View source on GitHub">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" /></svg>
+    </a>
+    <a href="https://opensea.io/collection/onchainhoodies-" target="_blank" rel="noopener noreferrer" class="social-link opensea-link" aria-label="View the OnChainHoodies collection on OpenSea">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C5.374 0 0 5.374 0 12s5.374 12 12 12 12-5.374 12-12S18.629 0 12 0ZM5.92 12.403l.051-.081 3.123-4.884a.107.107 0 0 1 .187.014c.52 1.169.972 2.623.76 3.528-.088.372-.335.876-.614 1.342a2.405 2.405 0 0 1-.117.199.106.106 0 0 1-.09.045H6.013a.106.106 0 0 1-.091-.163zm13.914 1.68a.109.109 0 0 1-.065.101c-.243.103-1.07.485-1.414.962-.878 1.222-1.548 2.97-3.048 2.97H9.053a4.019 4.019 0 0 1-4.013-4.028v-.072c0-.058.048-.106.108-.106h3.485c.07 0 .12.063.115.132-.026.226.017.459.125.67.206.42.636.682 1.099.682h1.726v-1.347H9.99a.11.11 0 0 1-.089-.173l.063-.09c.16-.231.391-.586.621-.992.156-.274.308-.566.43-.86.024-.052.043-.107.065-.16.033-.094.067-.182.091-.269a4.57 4.57 0 0 0 .065-.223c.057-.25.081-.514.081-.787 0-.108-.004-.221-.014-.327-.005-.117-.02-.235-.034-.352a3.415 3.415 0 0 0-.048-.312 6.494 6.494 0 0 0-.098-.468l-.014-.06c-.03-.108-.056-.21-.09-.317a11.824 11.824 0 0 0-.328-.972 5.212 5.212 0 0 0-.142-.355c-.072-.178-.146-.339-.213-.49a3.564 3.564 0 0 1-.094-.197 4.658 4.658 0 0 0-.103-.213c-.024-.053-.053-.104-.072-.152l-.211-.388c-.029-.053.019-.118.077-.101l1.32.357h.01l.173.05.192.054.07.019v-.783c0-.379.302-.686.679-.686a.66.66 0 0 1 .477.202.69.69 0 0 1 .2.484V6.65l.141.039c.01.005.022.01.031.017.034.024.084.062.147.11.05.038.103.086.165.137a10.351 10.351 0 0 1 .574.504c.214.199.454.432.684.691.065.074.127.146.192.226.062.079.132.156.19.232.079.104.16.212.235.324.033.053.074.108.105.161.096.142.178.288.257.435.034.067.067.141.096.213.089.197.159.396.202.598a.65.65 0 0 1 .029.132v.01c.014.057.019.12.024.184a2.057 2.057 0 0 1-.106.874c-.031.084-.06.17-.098.254-.075.17-.161.343-.264.502-.034.06-.075.122-.113.182-.043.063-.089.123-.127.18a3.89 3.89 0 0 1-.173.221c-.053.072-.106.144-.166.209-.081.098-.16.19-.245.278-.048.058-.1.118-.156.17-.052.06-.108.113-.156.161-.084.084-.15.147-.208.202l-.137.122a.102.102 0 0 1-.072.03h-1.051v1.346h1.322c.295 0 .576-.104.804-.298.077-.067.415-.36.816-.802a.094.094 0 0 1 .05-.03l3.65-1.057a.108.108 0 0 1 .138.103z" /></svg>
+    </a>
+  </footer>
+  <p id="integrity-check"></p>
+  <div id="cheat-toast" class="hidden"></div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
