@@ -2,6 +2,8 @@
 // own response shapes as-is; index.js normalizes into this engine's fixed
 // fighter-data contract (see ../../../ADAPTERS.md).
 
+import { cropToHeadShape } from "../shared/head-image.js";
+
 const BASE = "https://api.onchainhoodies.xyz/v1";
 
 const RETRY_ATTEMPTS = 3;
@@ -95,51 +97,13 @@ export async function fetchHoodTalkHistory(tokenId) {
 // Every Hoodie SVG opens with a <g><rect x="0" y="0" width="20" height="20"/></g>
 // full-canvas fill as its background layer. Stripping that one element gives a
 // transparent head for free instead of paying per-image background removal.
+// This part is genuinely OnChainHoodies-specific (their exact SVG structure) -
+// the actual head-shape clipping below is shared, see ../shared/head-image.js.
 function stripSvgBackground(svgText) {
   return svgText.replace(
     /<g fill="[^"]*" fill-opacity="1"><rect x="0" y="0" width="20" height="20"\/><\/g>/,
     "",
   );
-}
-
-function loadImageAsync(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
-  });
-}
-
-// The source art is a bust (head + shoulders), not just a head, so pasting
-// it whole onto a fighter's neck duplicates shoulder pixels against the
-// body sprite's own shoulders. Rasterize it and clip to a home-plate shape:
-// full width for the face, tapering to a point lower down so a bit of neck
-// survives but the shoulder corners are cut away.
-async function cropToHeadShape(svgDataUri) {
-  const img = await loadImageAsync(svgDataUri);
-  const size = 200;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(img, 0, 0, size, size);
-
-  const neckY = size * 0.62;
-  const bottomY = size * 0.85;
-  const centerX = size / 2;
-  ctx.globalCompositeOperation = "destination-in";
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(size, 0);
-  ctx.lineTo(size, neckY);
-  ctx.lineTo(centerX, bottomY);
-  ctx.lineTo(0, neckY);
-  ctx.closePath();
-  ctx.fill();
-
-  return canvas.toDataURL("image/png");
 }
 
 export async function fetchTransparentHeadDataUri(svgUrl) {

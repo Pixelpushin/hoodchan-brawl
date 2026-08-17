@@ -335,7 +335,16 @@ export function drawFighter(ctx, fighter, playerNum) {
 
     const rotationDeg = HEAD_ROTATIONS[anim.sheet]?.[frame % HEAD_ROTATIONS[anim.sheet].length] || 0;
 
-    ctx.imageSmoothingEnabled = false;
+    // Deliberately the opposite of the body sprite's own setting above -
+    // that one forces crisp nearest-neighbor scaling for genuine pixel-art
+    // sprite sheets, but headImg comes from whichever collection adapter is
+    // active (see src/adapters/) and is never pixel art itself - real NFT
+    // art, cropped/circle-framed by ../adapters/shared/head-image.js. Left
+    // inheriting `false` from the body draw above, ordinary smooth art
+    // rendered as hard nearest-neighbor blocks at this draw's scale factor -
+    // looked like it had been crushed into pixel art even though the actual
+    // source image and the adapter's own processing were both fine.
+    ctx.imageSmoothingEnabled = true;
     if (rotationDeg) {
       // Pivoting around anchor itself (the drawn square's center) swings the
       // neck end of the head away from the body as it rotates - a real head
