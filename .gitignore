@@ -11,4 +11,9 @@ version.json
 # track).
 assets/sounds/*.mp3
 assets/music/*.mp3
+
+# Setup-screen background video - served from the shared Blob store
+# (index.html) instead of git so a 30MB+ file doesn't bloat repo history on
+# every future swap.
+assets/backgrounds/setup-bg.mp4
 .env*.local
