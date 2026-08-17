@@ -5,14 +5,11 @@
 // Wallet, Brave Wallet, etc). Mobile/QR wallet support via WalletConnect
 // would need a project ID from cloud.reown.com, which nobody has set up
 // yet - out of scope until that exists.
-
-const ROBINHOOD_CHAIN = {
-  chainIdHex: "0x1237", // 4663
-  chainName: "Robinhood Chain",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
-  blockExplorerUrls: ["https://robinhoodchain.blockscout.com"],
-};
+//
+// Chain-agnostic by design - which chain to switch to comes from whichever
+// collection adapter is active (its config.chain, see
+// src/adapters/index.js), not a constant baked in here. connectWallet
+// takes that config as a parameter instead.
 
 export function hasInjectedWallet() {
   return typeof window !== "undefined" && !!window.ethereum;
@@ -25,16 +22,16 @@ export function hasInjectedWallet() {
 // on wallets that support it (MetaMask, Rabby, Coinbase Wallet as of
 // 2024+) - see disconnectWallet - but this flag is the real fallback that
 // makes "Disconnect" stick even on wallets that don't.
-const DISCONNECTED_KEY = "hoodies-fight:wallet-disconnected";
+const DISCONNECTED_KEY = "pfp-brawl:wallet-disconnected";
 
-async function ensureRobinhoodChain(provider) {
+async function ensureChain(provider, chainConfig) {
   const currentChainId = await provider.request({ method: "eth_chainId" });
-  if (currentChainId === ROBINHOOD_CHAIN.chainIdHex) return;
+  if (currentChainId === chainConfig.chainIdHex) return;
 
   try {
     await provider.request({
       method: "wallet_switchEthereumChain",
-      params: [{ chainId: ROBINHOOD_CHAIN.chainIdHex }],
+      params: [{ chainId: chainConfig.chainIdHex }],
     });
   } catch (err) {
     // 4902 = chain not added to this wallet yet - add it, then switch.
@@ -43,11 +40,11 @@ async function ensureRobinhoodChain(provider) {
         method: "wallet_addEthereumChain",
         params: [
           {
-            chainId: ROBINHOOD_CHAIN.chainIdHex,
-            chainName: ROBINHOOD_CHAIN.chainName,
-            nativeCurrency: ROBINHOOD_CHAIN.nativeCurrency,
-            rpcUrls: ROBINHOOD_CHAIN.rpcUrls,
-            blockExplorerUrls: ROBINHOOD_CHAIN.blockExplorerUrls,
+            chainId: chainConfig.chainIdHex,
+            chainName: chainConfig.chainName,
+            nativeCurrency: chainConfig.nativeCurrency,
+            rpcUrls: chainConfig.rpcUrls,
+            blockExplorerUrls: chainConfig.blockExplorerUrls,
           },
         ],
       });
@@ -57,14 +54,18 @@ async function ensureRobinhoodChain(provider) {
   }
 }
 
-export async function connectWallet() {
+// chainConfig comes from the active collection adapter (config.chain) - see
+// src/adapters/index.js. Adapters with no on-chain component at all can
+// omit config.chain entirely; main.js hides the "Connect Wallet" option in
+// that case, so connectWallet is never called without one.
+export async function connectWallet(chainConfig) {
   if (!hasInjectedWallet()) {
     throw new Error("No wallet found - install MetaMask, Rabby, or another browser wallet extension.");
   }
   const provider = window.ethereum;
   const accounts = await provider.request({ method: "eth_requestAccounts" });
   if (!accounts?.length) throw new Error("No account returned by wallet.");
-  await ensureRobinhoodChain(provider);
+  await ensureChain(provider, chainConfig);
   // A visitor clicking Connect is explicitly opting back in - clear any
   // earlier Disconnect so getConnectedAccount's silent resume works again
   // on their next visit instead of staying stuck disconnected forever.
