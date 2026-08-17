@@ -89,6 +89,44 @@ Returns an array of token IDs a wallet address owns. Return `[]` (not an error) 
 
 Returns up to `count` token IDs to populate the "Play Free" random-sample pool. For a large sequential ID range, sample randomly (see `onchainhoodies/index.js`). For a small fixed collection, shuffle/cycle the known list instead (see `template/index.js`) - whichever makes sense for how your collection's IDs actually work.
 
+## If your collection's art lives on IPFS
+
+Skip this whole section if your collection is fully on-chain (like OnChainHoodies) or hosted on a normal HTTP server you control - you don't need any of this, just `fetch()` it directly.
+
+If your `tokenURI` returns an `ipfs://` link instead (very common), read this first - **don't fetch IPFS gateways directly from the browser.** Two real problems show up immediately if you do, both hit and fixed while building the HOODCHAN adapter:
+
+1. **CORS.** Most public IPFS gateways don't send an `Access-Control-Allow-Origin` header, so the browser silently blocks the request. Verified live: 4 of 5 major public gateways (`w3s.link`, `nftstorage.link`, `ipfs.io`, `gateway.pinata.cloud`) failed this way on every single request, for every CID tested - not occasionally, always.
+2. **Reliability under load.** Even the one gateway that *does* work reliably fails sometimes under real traffic (a character-select page loading a dozen cards at once easily fires 20+ requests). Free public gateways are shared and rate-limited; this isn't a bug, it's just what "free and shared" means.
+
+The fix already built into this repo: **`api/ipfs.js`**, a tiny serverless function that fetches from IPFS *server-side* (no browser, no CORS, ever) and hands the result back to your adapter over your own domain. Your adapter code never touches a gateway URL directly - it just calls this:
+
+```js
+// Instead of fetch(`https://some-gateway.io/ipfs/${cid}`) - don't do this
+const res = await fetch(`/api/ipfs?path=${encodeURIComponent(cid)}`);
+```
+
+That's the entire integration. It works with **zero configuration** - `api/ipfs.js` already races 5 public gateways for you and retries once on failure. Ship it as-is and it'll work.
+
+### Making it fast (recommended for any real deployment)
+
+The zero-config path above is fine for trying things out, but free public gateways are genuinely not fast or reliable enough for a real, shipped game - people will sit on a loading spinner. The fix takes about 5 minutes and costs a few dollars a month:
+
+1. Go to **[pinata.cloud](https://pinata.cloud)** and make an account (or use one you already have).
+2. In the Pinata dashboard, go to **Gateways** and create a new **Dedicated Gateway**. Pinata gives it a domain that looks like `something-something-123.mypinata.cloud` - copy that.
+3. Still in the dashboard, go to **API Keys** (or your gateway's own settings) and create a **Gateway Access Token** - this is different from a regular Pinata API key, look specifically for "gateway access token." Copy it.
+4. In your Vercel project (Settings → Environment Variables), add two variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `PINATA_GATEWAY_DOMAIN` | the domain from step 2, e.g. `something-something-123.mypinata.cloud` |
+   | `PINATA_GATEWAY_TOKEN` | the token from step 3 |
+
+5. Redeploy. That's it - `api/ipfs.js` automatically detects these two variables and tries your dedicated gateway first, before ever touching a public one. Nothing in your adapter code changes; you don't need to know this happened.
+
+If you don't set these two variables, the app still works - it just falls back to the free public gateways (slower, occasionally flaky) instead of failing. There is no scenario where forgetting this step breaks the app; it only makes it faster.
+
+Using a different dedicated-gateway provider than Pinata? `api/ipfs.js` is one small function - swap the URL template in `dedicatedGateway()` for whatever your provider's docs show, same idea either way (a domain + a token/query-param, appended to the CID path).
+
 ## What never needs to change
 
 `body.js`'s sprite sheets/animations, `fighter.js`'s combat constants and the `ARCHETYPES` multiplier table, and all of `game.js`/`ai.js` - none of it reads anything adapter-specific. They only ever see the normalized shape above.

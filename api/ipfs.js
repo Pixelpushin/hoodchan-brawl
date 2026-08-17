@@ -2,22 +2,36 @@
 // restriction. CORS is enforced by browsers, not servers: a Vercel function
 // fetching from a public IPFS gateway has zero CORS exposure regardless of
 // whether that gateway sends an Access-Control-Allow-Origin header, since
-// this is a plain server-to-server request. Racing all 5 gateways here
-// (same list adapters used to race client-side) actually works as
-// designed - verified live that 4 of 5 public IPFS gateways send no CORS
-// header at all for this content when called from a browser, which made
-// racing them client-side pointless (guaranteed failures, wasted latency)
-// even though the content itself was reachable the whole time. See
-// src/adapters/hoodchan/chain.js, which calls this instead of hitting
-// gateways directly now.
+// this is a plain server-to-server request. Racing all 5 public gateways
+// here actually works as designed - verified live that 4 of 5 send no CORS
+// header at all for HOODCHAN's content when called from a browser, which
+// made racing them client-side pointless (guaranteed failures, wasted
+// latency) even though the content itself was reachable the whole time.
+// See src/adapters/hoodchan/chain.js, which calls this instead of hitting
+// gateways directly, and ADAPTERS.md's "IPFS-based collections" section for
+// the full writeup of when/why an adapter needs this at all.
 //
-// Plain query-string route (?path=<cid>/<subpath>) rather than a
-// /api/ipfs/[...path] catch-all - simpler and avoids a real Vercel dev
-// routing quirk hit while building this (a 2+-segment catch-all path
-// wasn't reaching the function locally; a single query param sidesteps
-// dynamic-route matching entirely and is exactly the pattern the rest of
-// this repo's own api/ routes already use).
-const GATEWAYS = [
+// Optional dedicated gateway (recommended for any real collection): public
+// IPFS gateways are free, shared, and rate-limited - verified live that
+// even server-side, with no CORS involved, all 5 can still fail together
+// under real concurrent load (a character-select grid loading a page of
+// cards easily fires 20+ requests at once). This matches the real h00dchan
+// app's own documented history with these exact same gateways ("roughly
+// 60-70% failure rate... rate-limiting from this app's own burst traffic").
+// A paid dedicated gateway (Pinata's, in this deployment's case) doesn't
+// have that shared-rate-limit problem, gets tried first when configured,
+// and is what makes this genuinely fast rather than just "eventually
+// works." See ADAPTERS.md for how to set one up for your own collection -
+// two env vars, no code changes needed.
+const PINATA_GATEWAY_DOMAIN = process.env.PINATA_GATEWAY_DOMAIN;
+const PINATA_GATEWAY_TOKEN = process.env.PINATA_GATEWAY_TOKEN;
+
+function dedicatedGateway(p) {
+  if (!PINATA_GATEWAY_DOMAIN || !PINATA_GATEWAY_TOKEN) return null;
+  return `https://${PINATA_GATEWAY_DOMAIN}/ipfs/${p}?pinataGatewayToken=${PINATA_GATEWAY_TOKEN}`;
+}
+
+const PUBLIC_GATEWAYS = [
   (p) => `https://dweb.link/ipfs/${p}`,
   (p) => `https://w3s.link/ipfs/${p}`,
   (p) => `https://nftstorage.link/ipfs/${p}`,
@@ -27,13 +41,25 @@ const GATEWAYS = [
 
 const FETCH_TIMEOUT_MS = 8000;
 
-function raceGateways(cidPath) {
-  const attempts = GATEWAYS.map(async (gateway) => {
-    const upstream = await fetch(gateway(cidPath), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!upstream.ok) throw new Error(`Gateway responded ${upstream.status}`);
-    return upstream;
-  });
-  return Promise.any(attempts);
+async function fetchOne(url) {
+  const upstream = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!upstream.ok) throw new Error(`Gateway responded ${upstream.status}`);
+  return upstream;
+}
+
+// Dedicated gateway first (if configured) since it's the reliable one - only
+// pays the cost of racing the public gateways if that single request fails
+// (or isn't configured at all, which is the zero-config default).
+async function raceGateways(cidPath) {
+  const dedicated = dedicatedGateway(cidPath);
+  if (dedicated) {
+    try {
+      return await fetchOne(dedicated);
+    } catch {
+      // fall through to the public race below
+    }
+  }
+  return Promise.any(PUBLIC_GATEWAYS.map((gateway) => fetchOne(gateway(cidPath))));
 }
 
 function sleep(ms) {
@@ -58,16 +84,9 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // Even server-side (no CORS involved at all here - that's purely a
-  // browser restriction) all 5 gateways can still fail together under real
-  // concurrent load - verified live, and matches the real h00dchan app's
-  // own documented history with these exact same public gateways ("roughly
-  // 60-70% failure rate... almost certainly rate-limiting from this app's
-  // own burst traffic hitting them repeatedly"). One retry after a short
-  // backoff catches the transient case cheaply; a collection whose public
-  // gateways are failing for a structural reason (not just burst load)
-  // would need a dedicated/paid gateway to fix properly - see this file's
-  // own header comment for why that isn't wired up here.
+  // One retry after a short backoff catches the transient case cheaply -
+  // gateways (dedicated or public) failing once under a burst often succeed
+  // moments later once that burst has passed.
   try {
     let upstream;
     try {
