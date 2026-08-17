@@ -1,0 +1,1287 @@
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes pop-in {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  60% { transform: translate(-50%, -50%) scale(1.08); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+body {
+  background: #0b0b0f;
+  color: #e8e8e8;
+  font-family: "Courier New", monospace;
+  text-align: center;
+  margin: 0;
+  padding: clamp(8px, 4vw, 24px);
+  background-image: radial-gradient(circle at 50% 0%, #1a1330 0%, #0b0b0f 70%);
+}
+
+h1 {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25em;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(28px, 8vw, 64px);
+  letter-spacing: 0.08em;
+  margin-bottom: 16px;
+  color: #3ddc3d;
+  text-shadow: 0 0 8px #3ddc3d99, 0 0 24px #3ddc3d66, 0 0 48px #3ddc3d33;
+}
+
+#logo-mark {
+  height: 1em;
+  width: auto;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 0 8px #3ddc3d99);
+}
+
+#setup {
+  position: relative;
+}
+
+#setup-bg {
+  /* Fixed to the viewport, not #setup's own box, so it reads as a full-page
+     backdrop behind the title/progress-bar/form together, not a video
+     confined to one card. Lives inside #setup purely so it hides for free
+     when #setup gets .hidden at fight start - display:none on an ancestor
+     still hides a position:fixed descendant. */
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  z-index: 0;
+  /* Desaturate/darken at the source too, not just the overlay, so it reads
+     as part of this site's dark palette instead of a bright video dropped
+     on top of it. */
+  filter: brightness(0.55) saturate(0.85);
+}
+
+#setup-content {
+  position: relative;
+  z-index: 1;
+  max-width: min(96vw, 1400px);
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
+.hype {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(16px, 2.4vw, 24px);
+  letter-spacing: 0.04em;
+  color: #ffe066;
+  text-shadow: 0 0 8px #ffe06699;
+  margin: 0 0 20px;
+}
+
+#setup button {
+  padding: 10px 24px;
+  background: #3ddc3d;
+  color: #0b0b0f;
+  border: none;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 16px;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 0 2px #0b0b0f, 0 0 12px #3ddc3d88;
+  transition: transform 0.1s ease-out;
+}
+
+#setup button:hover {
+  transform: scale(1.05);
+}
+
+#setup button:disabled {
+  background: #444;
+  box-shadow: none;
+  cursor: default;
+  transform: none;
+}
+
+#connect-wallet-btn {
+  padding: 12px 26px;
+  background: transparent;
+  color: #3ddc3d;
+  border: 2px solid #3ddc3d;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 0.03em;
+  box-shadow: 0 0 12px #3ddc3d44;
+  transition: transform 0.1s ease-out;
+}
+
+#connect-wallet-btn:hover {
+  transform: scale(1.03);
+  background: #3ddc3d22;
+}
+
+#connect-wallet-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+#wallet-status {
+  font-size: 15px;
+  color: #d0d0d8;
+  min-height: 1.2em;
+}
+
+#play-options {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 40px;
+  margin-top: 8px;
+}
+
+.play-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  max-width: 320px;
+}
+
+/* A thin divider, not a filled card/box - keeps the two options visually
+   separate without covering the background video behind them. */
+.play-option + .play-option {
+  border-left: 1px solid #3ddc3d33;
+  padding-left: 40px;
+}
+
+.option-desc {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #b8b8c2;
+}
+
+@media (max-width: 640px) {
+  #play-options {
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+  }
+  .play-option + .play-option {
+    border-left: none;
+    border-top: 1px solid #3ddc3d33;
+    padding-left: 0;
+    padding-top: 24px;
+  }
+}
+
+/* Fixed corner chip, not scoped inside #setup - proceedWithWallet moves on
+   to the select screen almost immediately after connecting, so Disconnect
+   has to live somewhere that survives the setup/select-screen/arena
+   transition instead of vanishing with the screen that showed it. */
+#wallet-chip {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #0b0b0fcc;
+  border: 1px solid #3ddc3d44;
+  border-radius: 20px;
+  padding: 6px 8px 6px 14px;
+  font-size: 12px;
+  color: #c8c8d2;
+  letter-spacing: 0.03em;
+}
+
+#wallet-chip.hidden {
+  display: none;
+}
+
+#disconnect-btn {
+  background: transparent;
+  border: 1px solid #ff4444;
+  color: #ff4444;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+#disconnect-btn:hover {
+  background: #ff444422;
+  box-shadow: 0 0 8px #ff444455;
+}
+
+#disconnect-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#setup-status {
+  font-size: 15px;
+  color: #d0d0d8;
+}
+
+.practice-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #d0d0d8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Visually hidden but still a real, focusable, keyboard-toggleable
+   checkbox (not display:none) - .toggle-track/.toggle-thumb below are pure
+   presentation, driven off this input's :checked state. */
+.practice-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.toggle-track {
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: #333;
+  border: 1px solid #555;
+  position: relative;
+  transition: background 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #d0d0d8;
+  transition: transform 0.15s ease-out, background 0.15s ease-out;
+}
+
+.practice-toggle input:checked + .toggle-track {
+  background: #3ddc3d55;
+  border-color: #3ddc3d;
+}
+
+.practice-toggle input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(18px);
+  background: #3ddc3d;
+  box-shadow: 0 0 8px #3ddc3daa;
+}
+
+.practice-toggle input:focus-visible + .toggle-track {
+  box-shadow: 0 0 0 2px #ffe066aa;
+}
+
+/* OpenSea's own brand blue rather than the site's green - reads as a
+   distinct external "go buy one" action, not another same-page control.
+   A solid-ish dark backing (not fully transparent) instead of matching
+   connect-wallet's pure-transparent style - against the setup screen's own
+   video background, a transparent button let busy footage show through and
+   made the text hard to read next to the FIGHT button's solid fill. */
+#opensea-btn {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 8px 20px;
+  background: #0b0b0fdd;
+  color: #2081e2;
+  border: 2px solid #2081e2;
+  cursor: pointer;
+  font-weight: bold;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  box-shadow: 0 0 12px #2081e244;
+  transition: transform 0.1s ease-out;
+}
+
+#opensea-btn:hover {
+  transform: scale(1.03);
+  background: #2081e222;
+}
+
+/* Site's own green rather than OpenSea's blue - this stays on-page (no NFT
+   purchase, no external link), so it reads as the free/same-site option
+   sitting next to the external "go buy one" one. Same solid-ish backing as
+   opensea-btn, for the same readability reason. */
+#free-play-btn {
+  display: inline-block;
+  margin-top: 4px;
+  margin-left: 8px;
+  padding: 8px 20px;
+  background: #0b0b0fdd;
+  color: #3ddc3d;
+  border: 2px solid #3ddc3d;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  box-shadow: 0 0 12px #3ddc3d44;
+  transition: transform 0.1s ease-out;
+}
+
+#free-play-btn:hover {
+  transform: scale(1.03);
+  background: #3ddc3d22;
+}
+
+.select-title {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: #ffe066;
+  text-shadow: 0 0 6px #ffe06699;
+  margin-bottom: 10px;
+}
+
+#character-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.grid-loading {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 24px 0;
+}
+
+.grid-loading p {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: #ffe066;
+  text-shadow: 0 0 6px #ffe06699;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 4px solid #ffe06633;
+  border-top-color: #3ddc3d;
+  border-right-color: #ffe066;
+  animation: spin 0.8s linear infinite;
+  box-shadow: 0 0 12px #3ddc3d44;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.character-card {
+  position: relative;
+  background: #1a1a22;
+  border: 2px solid #444;
+  border-radius: 4px;
+  padding: 6px;
+  max-width: 100px;
+  cursor: pointer;
+  transition: transform 0.1s ease-out, border-color 0.1s;
+  text-align: center;
+}
+
+.character-card:hover {
+  border-color: #3ddc3d;
+  transform: scale(1.05);
+}
+
+.character-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  image-rendering: pixelated;
+  border-radius: 3px;
+  background: #0b0b0f;
+}
+
+.character-card .card-label {
+  font-size: 12px;
+  font-weight: bold;
+  margin-top: 4px;
+  color: #e8e8e8;
+  letter-spacing: 0.03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: #0b0b0fcc;
+  border: 1px solid #3ddc3d88;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #3ddc3d55;
+  cursor: help;
+}
+
+/* ===== Character select (MK-style dual-portrait picker) ===== */
+
+#select-screen {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Oversized + inset-negative rather than blurred at its own edges - a
+   filter: blur() on an element sized exactly to its container smears its
+   own edge into visible soft/transparent borders. Sizing it past the
+   viewport on every side by more than the blur radius keeps the blurred
+   edge permanently off-screen. */
+#select-bg {
+  position: fixed;
+  inset: -40px;
+  background-image: var(--select-bg-image, none);
+  background-size: cover;
+  background-position: center;
+  filter: blur(4px) brightness(0.55);
+  z-index: -1;
+}
+
+/* Sized naturally (comfortably roomy - not squeezed to an assumed
+   viewport), then measured and scaled down as a whole by fitSelectScreen()
+   in main.js if it doesn't actually fit the visitor's screen. A vh-only
+   budget can't account for variable content height (e.g. a long trait name
+   wrapping the fighter-label to two lines), and overflow:hidden alone just
+   silently clips instead of shrinking - measuring the real rendered size
+   and scaling is the only way to guarantee nothing is ever cut off,
+   regardless of screen size. transform-origin stays centered so the scale
+   shrinks in place around the same point #select-screen already centered
+   it at. */
+#select-content {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 22px 16px;
+  width: 100%;
+  max-width: 1150px;
+  transform-origin: 50% 50%;
+}
+
+#select-fighters {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  width: 100%;
+  max-width: 1100px;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.fighter-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Fixed-size window that crops the wide 800x360 arena-shaped canvas down
+   to a tall MK-style portrait - simpler than teaching drawFighter a second
+   coordinate system just for this screen, since the canvas already renders
+   the exact same idle-loop fighter the pre-fight/in-match screens do. The
+   canvas is scaled+shifted via CSS transform inside this overflow:hidden
+   window instead. overflow:hidden is load-bearing (it's what does the
+   actual cropping), but no visible border/box/background - the character
+   is meant to read as standing directly in the blurred scene, MK-style,
+   not sitting inside a UI card. Sized off a fixed width with a fixed
+   aspect ratio (comfortably big - see the #select-content comment above
+   for why an assumed vh budget isn't what keeps this from overflowing
+   anymore). */
+.portrait-frame {
+  width: min(320px, 34vw);
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+}
+
+/* Overrides the global `canvas { background/border/box-shadow/aspect-ratio }`
+   rule (meant for the real match canvas) - without this, every portrait
+   canvas picked that styling up too, showing as a solid framed box behind
+   the character instead of a transparent cutout over the blurred scene. */
+.portrait-frame canvas {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  max-width: none;
+  aspect-ratio: auto;
+  width: 100%;
+  height: auto;
+  transform: scale(6.5) translate(0, 9%);
+  transform-origin: 50% 62%;
+  image-rendering: pixelated;
+}
+
+.fighter-label {
+  margin-top: 10px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: #ffe066;
+  text-shadow: 0 0 8px #ffe06699;
+  text-align: center;
+}
+
+#vs-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  /* #select-fighters centers this column against the portraits'
+     full height (align-items: center) - no manual offset needed. */
+}
+
+#vs-mark {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 30px;
+  color: #ff4444;
+  text-shadow: 0 0 12px #ff4444aa, 0 0 30px #ff444455;
+}
+
+#select-panels {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+  max-width: 1100px;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.select-panel {
+  flex: 1;
+  min-width: 0;
+  background: #0b0b0fcc;
+  border: 2px solid #3ddc3d33;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  overflow: hidden;
+}
+
+.panel-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #d0d0d8;
+  letter-spacing: 0.05em;
+}
+
+.panel-pagination button {
+  padding: 4px 10px;
+  background: transparent;
+  color: #3ddc3d;
+  border: 1px solid #3ddc3d88;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.panel-pagination button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.panel-pagination button:not(:disabled):hover {
+  background: #3ddc3d22;
+}
+
+.character-card.selected {
+  border-color: #ffe066;
+  box-shadow: 0 0 10px #ffe06699;
+}
+
+#ready-btn {
+  padding: 14px 40px;
+  background: #3ddc3d;
+  color: #0b0b0f;
+  border: none;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 18px;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 0 2px #0b0b0f, 0 0 16px #3ddc3d88;
+  transition: transform 0.1s ease-out;
+}
+
+#ready-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+
+#ready-btn:disabled {
+  background: #333;
+  color: #777;
+  box-shadow: none;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  #select-fighters {
+    gap: 2vw;
+  }
+  #select-panels {
+    flex-direction: column;
+  }
+}
+
+/* A single shared node appended straight to <body> (see attachBadgeTooltip
+   in main.js), not nested inside any card - position: fixed is supposed to
+   escape all ancestor clipping/scrolling, but .character-card:hover applies
+   its own transform: scale(), and CSS hover state bubbles to ancestors, so
+   while a badge is hovered its parent card is ALSO :hover and gets
+   transformed - which per spec makes that card the containing block for
+   any position:fixed descendant instead of the viewport, trapping the
+   tooltip right back inside it (and behind the grid's own overflow clip).
+   Living outside every card entirely sidesteps that. */
+#badge-tooltip {
+  position: fixed;
+  width: max-content;
+  max-width: 180px;
+  background: #0b0b0ff2;
+  border: 1px solid #3ddc3d88;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e8e8e8;
+  text-align: left;
+  white-space: pre-line;
+  box-shadow: 0 0 16px #000c;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease-out;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+#badge-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Fixed full-viewport, not part of normal document flow - the old layout
+   (max-width block sitting in the page below the header) let the controls
+   text and footer push the total page height past the viewport, so the
+   whole page scrolled during a match. This can't scroll: everything that
+   matters (HUD, canvas, controls) is either sized to fit inside it or
+   overlaid on top of it. */
+#arena {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: #0b0b0f;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Purely a centering stage for #canvas-wrap - fills the entirety of #arena
+   (no reserved margin - the background art stays full-bleed, edge to edge,
+   not letterboxed behind a strip for the corner buttons). #canvas-wrap
+   itself gets an exact pixel size from fitArenaCanvas() in main.js (the
+   same measure-and-fit approach the character-select screen's portraits
+   already use) and stays centered inside it. Clearance for the corner
+   buttons is handled by pushing the HUD itself down instead (see .hud) -
+   the buttons float over the game art on their own translucent backing. */
+#canvas-stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Sized in JS (fitArenaCanvas) to the exact largest 800x360-ratio box that
+   fits the screen, so the canvas below can just fill it at width/height
+   100% - and so the HUD/names/taunts/countdown/result overlays positioned
+   against THIS box line up with the canvas's real visible pixels instead
+   of some larger flex-stretched wrapper. */
+#canvas-wrap {
+  position: relative;
+}
+
+canvas {
+  background: #1b1330;
+  image-rendering: pixelated;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Fighting-game standard: the HUD sits directly on top of the game view
+   instead of in its own strip above it - lets the canvas actually use the
+   full screen instead of giving up a fixed slice of height to make room
+   for it. top is a fixed px, not a percentage - #exit-match-btn/
+   #wallet-chip are also fixed px (12px inset, ~34px tall), so a matching
+   fixed offset here reliably clears them at any canvas size (a percentage
+   would shrink right along with a small canvas and could creep back up
+   behind the buttons). */
+.hud {
+  position: absolute;
+  top: 64px;
+  left: 2.5%;
+  right: 2.5%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 2;
+}
+
+/* One PFP-plus-bars group per fighter (MK/Injustice style) instead of a
+   bare pair of bars with the name floating in an unrelated row below it -
+   the name now reads unambiguously as belonging to the portrait/bars right
+   beside it. p2's markup order is already pfp-last in HTML (mirrors p1's
+   pfp-first) rather than flipped with CSS, so both read the same
+   left-to-right regardless of which side they're on. */
+.fighter-hud {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pfp {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #1b1330;
+  border: 2px solid #3ddc3d;
+  box-shadow: 0 0 8px #3ddc3d88, inset 0 0 6px #000a;
+}
+
+.bars-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fighter-name {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #fff;
+  text-shadow: 0 1px 3px #000, 0 0 8px #3ddc3d99;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Without this it inherits body's global text-align:center, floating in
+     the middle of the (wide) bars-col instead of hugging the PFP beside it
+     - .fighter-hud-flip below overrides this to right for P2's mirrored
+     side, but P1's own left alignment still has to be stated explicitly. */
+  text-align: left;
+}
+
+.fighter-hud-flip .fighter-name {
+  text-align: right;
+}
+
+/* Slightly smaller than before (22px/11px) - the PFP+name addition needs
+   the room, and the tighter bars read cleaner stacked under a name label
+   than the old bare full-height pair did. */
+.healthbar,
+.powerbar {
+  height: 18px;
+  background: #161620;
+  border: 2px solid #555;
+  box-shadow: inset 0 0 0 1px #000, 0 1px 4px #000c;
+}
+
+.powerbar {
+  height: 9px;
+}
+
+.health-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(#5cf25c, #2fae2f);
+  transition: width 0.15s ease-out;
+}
+
+.power-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(#ffe066, #d9a300);
+  transition: width 0.1s linear;
+}
+
+.power-fill.power-ready {
+  animation: pulse 0.5s infinite;
+  box-shadow: 0 0 8px #ffd700, 0 0 16px #ffd700aa;
+}
+
+/* P1's fill stays right-anchored in its own track (drains toward center as
+   it empties) while P2's default left-anchor drains the opposite way -
+   both bars close in toward the middle as the fight goes on. */
+#p1-health,
+#p1-power {
+  margin-left: auto;
+}
+
+/* Below the round-info line (see .names), not inline with the bars - was
+   centered between them at bar-height, which crammed it into the same
+   cramped strip as everything else at the top of the screen. Absolute
+   instead of a flex child now, so it needs its own centering. */
+#timer {
+  position: absolute;
+  top: 150px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 30px;
+  color: #ffe066;
+  text-shadow: 0 0 6px #ffe06699, 0 2px 4px #000c;
+}
+
+/* Just the round counter now that each fighter's name lives in its own
+   .fighter-hud group above - top sits below the taller PFP+name+bars
+   stack .hud grew into. */
+.names {
+  position: absolute;
+  top: 122px;
+  left: 2.5%;
+  right: 2.5%;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+}
+
+#round-info {
+  font-size: 14px;
+  color: #ffe066;
+  letter-spacing: 0.1em;
+  text-shadow: 0 1px 3px #000, 0 2px 8px #000c;
+}
+
+/* Shown for the whole time any match (not just practice) is running -
+   startMatch reveals it unconditionally now, since a normal AI match had no
+   way to bail out early either, only a post-match Back to Menu button.
+   Fixed to the viewport (not the HUD flow, which is overlaid on the canvas)
+   so it stays reachable regardless of canvas size. Top-left, not top-right -
+   #wallet-chip is fixed there too and both can be visible at once (a
+   connected wallet, mid-match) - #canvas-stage's margin-top above reserves
+   clear space up here for both so neither ever overlaps the HUD. */
+#exit-match-btn {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  padding: 6px 16px;
+  background: #0b0b0fcc;
+  color: #ff6b6b;
+  border: 2px solid #ff6b6b;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  transition: transform 0.1s ease-out;
+}
+
+#exit-match-btn:hover {
+  transform: scale(1.05);
+  background: #ff6b6b22;
+}
+
+/* Positioned relative to #canvas-wrap, which matches the canvas's own
+   bounds exactly - percentages here line up with the 800x360 game-world
+   coordinates fighters are drawn in, so this tracks their head height
+   instead of floating relative to the whole arena (HUD included). */
+.taunt {
+  position: absolute;
+  top: 34%;
+  background: #fff;
+  color: #000;
+  padding: 6px 10px;
+  border-radius: 6px;
+  max-width: 240px;
+  font-size: 14px;
+  box-shadow: 0 2px 10px #0008;
+}
+
+#taunt-p1 {
+  left: 10%;
+}
+
+#taunt-p2 {
+  right: 10%;
+}
+
+#countdown {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 64px;
+  font-weight: bold;
+  color: #ffe066;
+  text-shadow: 0 0 12px #ffe066cc, 0 0 30px #ffe06666;
+  animation: pop-in 0.25s ease-out;
+}
+
+/* Was top:12% - right in the same cramped strip as the HUD (bars/round-
+   info/timer all live in the top ~160px). Centered lower instead, just
+   above the fighters' own head height (GROUND_Y minus their standing
+   height lands heads around ~58% down the canvas) so the win title/quote/
+   buttons read as their own clearly-separated group instead of stacking on
+   top of the HUD or the characters themselves. */
+#result {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  animation: pop-in 0.3s ease-out;
+  max-width: 90%;
+  text-align: center;
+}
+
+/* A colored glow alone (the old text-shadow here) does nothing for
+   contrast against a bright/busy arena background - it's the same hue as
+   the text, so on something like a cream-colored neon sign it nearly
+   vanishes (see the screenshot that prompted this). -webkit-text-stroke
+   adds a real dark outline around the glyphs themselves - unlike faking one
+   with offset text-shadows, it stays crisp and even at any size - and the
+   added drop-shadow gives it a hard dark edge for depth on top of that.
+   The glow stays layered on for style, it's just no longer the only thing
+   standing between this text and the background. */
+#result-title {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(28px, 5vw, 48px);
+  font-weight: bold;
+  letter-spacing: 0.06em;
+  color: #ffe066;
+  /* -webkit-text-stroke is centered ON the glyph edge - paint-order below
+     puts the fill on top, which covers the INNER half of the stroke,
+     leaving only the outer half visible as a ring. 3px read as barely
+     there once cut in half; 9px gives a genuinely bold ~4-5px black
+     cartoon-style outline instead of a faint dark fuzz. Pure #000 (not the
+     site's usual near-black #0b0b0f) for the hardest possible edge. */
+  -webkit-text-stroke: 9px #000;
+  paint-order: stroke fill;
+  text-shadow: 0 0 12px #ffe066cc, 0 0 30px #ffe06666, 0 4px 8px #000c;
+}
+
+/* Only shown once the whole match (not just a round) is decided - a
+   drawn/mid-match round still auto-advances with no buttons at all. */
+#result-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+#result-actions button {
+  padding: 10px 22px;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  transition: transform 0.1s ease-out;
+}
+
+#result-actions button:hover {
+  transform: scale(1.05);
+}
+
+/* Vs-AI only - see main.js's showMatchOverActions. A live PvP opponent
+   can't be "played again" with a silent solo restart, so this stays
+   hidden entirely rather than doing something misleading. */
+#result-again {
+  background: #3ddc3d;
+  color: #0b0b0f;
+  border: none;
+  box-shadow: 0 0 0 2px #0b0b0f, 0 0 12px #3ddc3d88;
+}
+
+#result-back {
+  background: transparent;
+  color: #3ddc3d;
+  border: 2px solid #3ddc3d;
+  box-shadow: 0 0 12px #3ddc3d44;
+}
+
+.panel-heading {
+  margin: 0 0 10px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: #3ddc3d;
+  text-shadow: 0 0 6px #3ddc3d55;
+}
+
+#controls-panel h3.panel-heading:not(:first-child) {
+  margin-top: 22px;
+}
+
+.key-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.key-caps {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.key-cap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  background: #16161d;
+  border: 1px solid #3ddc3d88;
+  border-bottom: 2px solid #3ddc3d;
+  border-radius: 5px;
+  box-shadow: 0 0 6px #3ddc3d33, inset 0 1px 0 #ffffff14;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  color: #3ddc3d;
+  text-shadow: 0 0 6px #3ddc3d66;
+}
+
+.key-cap-wide {
+  min-width: 62px;
+  padding: 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.key-label {
+  font-size: 13px;
+  color: #d0d0d8;
+  letter-spacing: 0.02em;
+}
+
+.tips-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: disc;
+}
+
+.tips-list li {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #b8b8c2;
+  margin: 0 0 10px;
+}
+
+.tips-list li::marker {
+  color: #ffe066;
+}
+
+.tips-list li:last-child {
+  margin-bottom: 0;
+}
+
+/* Small and out of the way in a bottom corner rather than sitting in the
+   game's sightline - the two paragraphs of control text used to just run
+   permanently along the bottom of the page; now they only take up space
+   when a visitor actually asks for them. */
+#controls-info-btn {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 20;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #0b0b0fcc;
+  border: 1px solid #3ddc3d88;
+  color: #3ddc3d;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease-out, box-shadow 0.15s ease-out;
+}
+
+#controls-info-btn:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 10px #3ddc3d66;
+}
+
+/* Off-screen via transform (not display:none) so the slide transition has
+   something to animate - position:fixed keeps it out of layout either way,
+   so this never affects #arena's own sizing or scroll. */
+#controls-panel {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 19;
+  width: min(320px, 86vw);
+  background: #0b0b0fee;
+  border-right: 1px solid #3ddc3d44;
+  padding: 64px 22px 22px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform 0.2s ease-out;
+}
+
+#controls-panel.open {
+  transform: translateX(0);
+}
+
+#integrity-check {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  color: #c8c8d2;
+  text-shadow: 0 0 6px #3ddc3d33;
+  text-align: center;
+}
+
+#integrity-check a {
+  color: #3ddc3d;
+  text-decoration: underline;
+  text-shadow: 0 0 6px #3ddc3d66;
+}
+
+/* Empty until version.json resolves (or forever, on local dev where no
+   Vercel build ran) - collapses instead of leaving a blank gap under the
+   button. */
+#integrity-check:empty {
+  display: none;
+}
+
+#site-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 28px;
+  margin: 32px 0 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.social-link {
+  display: inline-flex;
+  transition: transform 0.15s ease-out;
+}
+
+.social-link svg {
+  width: 26px;
+  height: 26px;
+  fill: #9a9aa4;
+  transition: fill 0.15s ease-out, filter 0.15s ease-out;
+}
+
+.social-link:hover {
+  transform: scale(1.12);
+}
+
+/* Each brand glows its own color on hover rather than the site's usual
+   green - the whole point is these read as X/GitHub/OpenSea at a glance,
+   not as three more green buttons. */
+.x-link:hover svg {
+  fill: #e8e8ea;
+  filter: drop-shadow(0 0 8px #1d9bf0cc) drop-shadow(0 0 16px #1d9bf066);
+}
+
+.github-link:hover svg {
+  fill: #e8e8ea;
+  filter: drop-shadow(0 0 8px #a371f7cc) drop-shadow(0 0 16px #a371f766);
+}
+
+.opensea-link:hover svg {
+  fill: #2081e2;
+  filter: drop-shadow(0 0 8px #2081e2cc) drop-shadow(0 0 16px #2081e266);
+}
+
+#cheat-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 16px;
+  letter-spacing: 0.08em;
+  color: #ff3b3b;
+  background: #0b0b0ff2;
+  border: 2px solid #ff3b3b;
+  padding: 10px 20px;
+  box-shadow: 0 0 20px #ff3b3b88;
+  animation: pop-in 0.25s ease-out;
+  pointer-events: none;
+}

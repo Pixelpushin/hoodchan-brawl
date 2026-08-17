@@ -1,0 +1,173 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HOODCHAN Brawl API",
+    "version": "1.0.0",
+    "description": "Ambient match-record data for HOODCHAN Brawl, built on the PFP Brawl engine (see ADAPTERS.md) running the HOODCHAN adapter. Tracks how many times each token ID has fought and won/lost in-game - paths/limits below are inherited from the engine's original OnChainHoodies adapter and haven't been re-namespaced per-collection yet (see README's 'Known limitation'). Backed by this deployment's own Redis store (KV_REST_API_URL/TOKEN, set independently per Vercel project) - returns empty/zero stats until that's configured on this project specifically. Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/hoodchan-brawl."
+  },
+  "paths": {
+    "/api/hoodie/{tokenId}/stats": {
+      "get": {
+        "operationId": "getHoodieStats",
+        "summary": "Get a Hoodie's in-game fight record",
+        "parameters": [
+          {
+            "name": "tokenId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5999
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fight record for one Hoodie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokenId": {
+                      "type": "integer"
+                    },
+                    "wins": {
+                      "type": "integer"
+                    },
+                    "losses": {
+                      "type": "integer"
+                    },
+                    "matches": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid tokenId"
+          }
+        }
+      }
+    },
+    "/api/matches/recent": {
+      "get": {
+        "operationId": "getRecentMatches",
+        "summary": "Get the most recent completed matches across all Hoodies",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent match feed, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "matches": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tokenId": {
+                            "type": "integer"
+                          },
+                          "opponentTokenId": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "result": {
+                            "type": "string",
+                            "enum": [
+                              "win",
+                              "loss"
+                            ]
+                          },
+                          "ts": {
+                            "type": "integer",
+                            "description": "Unix ms timestamp"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/match-result": {
+      "post": {
+        "operationId": "postMatchResult",
+        "summary": "Record the outcome of a completed match for one Hoodie",
+        "description": "Called by the game client itself when a match ends. Unauthenticated - not designed to resist abuse, treat resulting stats as an ambient/fun signal rather than a verified record.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "tokenId",
+                  "result"
+                ],
+                "properties": {
+                  "tokenId": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5999
+                  },
+                  "opponentTokenId": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 5999
+                  },
+                  "result": {
+                    "type": "string",
+                    "enum": [
+                      "win",
+                      "loss"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded"
+          },
+          "400": {
+            "description": "Invalid body"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://brawl.hoodchan.org"
+    }
+  ]
+}
