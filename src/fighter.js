@@ -2,6 +2,19 @@ export const MOVE_SPEED = 3;
 export const MAX_HEALTH = 100;
 export const MAX_POWER = 100;
 
+// The logical coordinate space every draw call and position (ARENA_MIN_X/
+// MAX_X below, fighter x/y, HUD layout math) is written in terms of - NOT
+// necessarily the canvas element's own backing-store pixel dimensions. See
+// main.js's setupCanvas: the actual canvas.width/height gets set higher
+// (RENDER_SCALE×) so CSS's `image-rendering: pixelated` upscale (needed for
+// the body sprites' own deliberately-blocky look) has less distance to
+// stretch, which is what keeps adapter-supplied head art from getting
+// crushed into blocky pixels alongside it - ctx.scale(RENDER_SCALE,
+// RENDER_SCALE) then makes that transparent to every draw call, which can
+// keep using these two numbers exactly as before.
+export const CANVAS_WIDTH = 800;
+export const CANVAS_HEIGHT = 360;
+
 // Canvas is 800 wide. `x` is a fighter's LEFT edge (see BODY_CENTER_OFFSET
 // in game.js), and the widest a drawn sprite ever gets on screen is ~125px
 // (86px raw frameSize * 1.4 CHARACTER_SCALE, the biggest of any sheet - even

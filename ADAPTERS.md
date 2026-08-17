@@ -2,10 +2,11 @@
 
 The engine (`src/fighter.js`, `src/game.js`, `src/body.js`, `src/ai.js`, `src/main.js`) knows nothing about any specific NFT collection. Everything collection-specific - what a token's art looks like, where it comes from, what its traits mean, how wallet ownership is checked - lives behind a single **adapter** module. Swapping the game to a different collection means writing one new adapter and changing one import line (`src/adapters/index.js`); nothing else in the codebase needs to change.
 
-Two adapters exist today:
+Three adapters exist today:
 
-- `src/adapters/onchainhoodies/` - the real thing this game was built for. REST API + on-chain fallback, real trait data, wallet-connect on Robinhood Chain.
-- `src/adapters/template/` - a minimal, fully working example with zero network calls (a static in-repo list, placeholder art generated on the fly). Copy this folder as your starting point.
+- `src/adapters/onchainhoodies/` - the real thing this game was built for. REST API + on-chain fallback, real trait data, wallet-connect on Robinhood Chain, `headStyle: "cropped"`.
+- `src/adapters/hoodchan/` - a second real collection (HOODCHAN, same chain, different contract), added specifically to test how this adapter system holds up against a collection with none of OnChainHoodies' conveniences: no REST API (on-chain only), no natural 4-archetype trait, and photographic/collage art instead of isolated vector art - hence `headStyle: "circle"` (see below).
+- `src/adapters/template/` - a minimal, fully working example with zero network calls (a static in-repo list, placeholder art generated on the fly). Copy this folder as your starting point if you don't have a real collection wired up yet.
 
 Switch which one is active by editing `src/adapters/index.js`:
 
@@ -37,7 +38,24 @@ A `config` object (branding/behavior flags) plus 4 functions. See `src/adapters/
 | `hypeLines` | yes | Array of strings, one shown at random above the play buttons |
 | `collectionUrl` / `collectionCta` | no | Marketplace link + button text. Omit `collectionUrl` (empty string) to hide that link entirely |
 | `walletPlayDesc` | yes | One-line description on the wallet-connect card |
+| `headStyle` | yes | `"cropped"` or `"circle"` - see below |
 | `chain` | no | `{chainIdHex, chainName, nativeCurrency, rpcUrls, blockExplorerUrls}` - **omit this field entirely if your collection has no wallet-connect support yet**. `main.js` hides "Connect Wallet" whenever `config.chain` is missing, and `wallet.js` never gets called without one |
+
+### `headStyle` - the one question that decides it: can this art's background be cleanly removed?
+
+- **Yes** (isolated vector art, a flat/solid background layer you can programmatically strip) → `"cropped"`. Produces a tight head+shoulders cutout that sits seamlessly on the body sprite's neck. See `onchainhoodies/index.js` + `api.js`'s `fetchTransparentHeadDataUri` for a full worked example (strip a known SVG background pattern, then hand off to the shared cropper).
+- **No** (photographic art, busy collage art, anything with a background you can't isolate) → `"circle"`. Skips background removal entirely and circle-crops the whole image with a border, like a normal avatar badge. This is the safe default for a collection you haven't written custom background-removal logic for - see `hoodchan/index.js`, whose art is a real meme photo with a cartoon face pasted on top and no way to cut out "just the head."
+
+Both styles are one-line calls into `src/adapters/shared/head-image.js`, which every adapter should use rather than reimplementing:
+
+```js
+import { prepareHeadImage } from "../shared/head-image.js";
+// ...
+const imageUrl = await prepareHeadImage(alreadyBackgroundFreeImageUrl, config.headStyle); // "cropped"
+const imageUrl = await prepareHeadImage(rawImageUrl, config.headStyle); // "circle" - no prep needed
+```
+
+`prepareHeadImage` just dispatches to `cropToHeadShape` or `circleFrameImage` based on the string - swapping a collection's `headStyle` from `"cropped"` to `"circle"` (or back) is genuinely that one-word change, nothing else in the adapter needs to know or care.
 
 ### `fetchTokenPreview(tokenId)`
 

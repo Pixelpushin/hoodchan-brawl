@@ -19,7 +19,7 @@ import {
   HEAD_POP_DURATION,
   GROUND_Y,
 } from "./body.js";
-import { MAX_POWER, SLIDE, UPPERCUT, BUILDER_SPECIAL, HODLER_SPECIAL, ARENA_MIN_X, ARENA_MAX_X } from "./fighter.js";
+import { MAX_POWER, SLIDE, UPPERCUT, BUILDER_SPECIAL, HODLER_SPECIAL, ARENA_MIN_X, ARENA_MAX_X, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
 import { playSound } from "./sound.js";
 import { createAIController } from "./ai.js";
 import { speakTaunt } from "./tts.js";
@@ -149,7 +149,7 @@ function resolveCollision(a, b) {
 
 const SCROLL_KEYS = new Set([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
 
-export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = false, practiceMode = false }) {
+export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, practiceMode = false }) {
   // A real training dummy, not just a very bad AI - never acts (no attacks,
   // no blocks, no movement), which is exactly emptyP2Input below. p2AI is
   // ignored entirely when this is on; readInput(KEYMAP.p2) is also skipped
@@ -732,7 +732,7 @@ export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = 
       p1.stateT++;
       p2.stateT++;
       ctx.save();
-      drawArena(ctx, canvas.width, canvas.height);
+      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
       drawGroundBlood();
       drawFighter(ctx, p1, 1);
       drawFighter(ctx, p2, 2);
@@ -809,7 +809,7 @@ export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = 
       shake *= 0.8;
       if (shake < 0.5) shake = 0;
     }
-    drawArena(ctx, canvas.width, canvas.height);
+    drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
     drawGroundBlood();
     drawFighter(ctx, p1, 1);
     drawFighter(ctx, p2, 2);
@@ -824,7 +824,7 @@ export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = 
     ctx.restore();
 
     if (flash > 0) {
-      drawFlash(ctx, canvas.width, canvas.height, flash);
+      drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, flash);
       flash *= 0.75;
       if (flash < 0.02) flash = 0;
     }

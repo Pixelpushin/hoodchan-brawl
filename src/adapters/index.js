@@ -4,6 +4,6 @@
 // goes through activeAdapter so swapping collections never touches game
 // logic. See ADAPTERS.md at the repo root for what an adapter must export.
 import * as onchainhoodies from "./onchainhoodies/index.js";
-// import * as template from "./template/index.js"; // try this one instead
+// import * as hoodchan from "./hoodchan/index.js"; // try this one instead
 
 export const activeAdapter = onchainhoodies;

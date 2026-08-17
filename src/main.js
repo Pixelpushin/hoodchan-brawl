@@ -1,5 +1,5 @@
 import { activeAdapter } from "./adapters/index.js";
-import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS } from "./fighter.js";
+import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
 import { createGame } from "./game.js";
 import { initSound, playSound, playRandomTrack, stopMusic } from "./sound.js";
 import { pickRandomArena, drawArena, drawFighter } from "./body.js";
@@ -8,6 +8,28 @@ import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet
 import { initBloodCode } from "./blood-code.js";
 
 initBloodCode();
+
+// Backing-store pixel density multiplier - see fighter.js's CANVAS_WIDTH/
+// HEIGHT comment for why this exists (CSS's `image-rendering: pixelated`,
+// needed for the body sprites' own low-res look, was also crushing
+// adapter-supplied head art into blocky pixels at the same upscale step).
+// 2x was enough to fix that visibly without a real performance cost - not
+// tied to devicePixelRatio, this is about giving the canvas enough native
+// pixels to survive a `pixelated` CSS upscale, not about retina sharpness.
+const RENDER_SCALE = 2;
+
+// Every canvas in this game (the arena + both character-select portraits)
+// needs this same setup - real backing-store size scaled up, logical
+// drawing space (CANVAS_WIDTH/HEIGHT) unchanged via ctx.scale, so nothing
+// in body.js/game.js/fighter.js has to know or care this happened. Must set
+// canvas.width/height BEFORE getContext - either resets the transform.
+function setupCanvas(canvas) {
+  canvas.width = CANVAS_WIDTH * RENDER_SCALE;
+  canvas.height = CANVAS_HEIGHT * RENDER_SCALE;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(RENDER_SCALE, RENDER_SCALE);
+  return ctx;
+}
 
 // Reskins the static HTML for whichever collection src/adapters/index.js
 // currently points at - title, hero copy, and the OpenSea/marketplace links
@@ -107,9 +129,9 @@ function fitArenaCanvas() {
   if (document.getElementById("arena").classList.contains("hidden")) return;
   const availW = canvasStage.clientWidth;
   const availH = canvasStage.clientHeight;
-  const scale = Math.min(availW / 800, availH / 360);
-  canvasWrap.style.width = `${Math.floor(800 * scale)}px`;
-  canvasWrap.style.height = `${Math.floor(360 * scale)}px`;
+  const scale = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
+  canvasWrap.style.width = `${Math.floor(CANVAS_WIDTH * scale)}px`;
+  canvasWrap.style.height = `${Math.floor(CANVAS_HEIGHT * scale)}px`;
 }
 window.addEventListener("resize", fitArenaCanvas);
 
@@ -332,12 +354,12 @@ function attachBadgeTooltip(badge, text) {
 // this object's clock.
 function createPortraitRenderer(canvasId, playerNum, facing) {
   const canvas = document.getElementById(canvasId);
-  const ctx = canvas.getContext("2d");
+  const ctx = setupCanvas(canvas);
   let visual = null;
   let raf = null;
 
   function loop() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     if (visual) {
       visual.stateT++;
       drawFighter(ctx, visual, playerNum);
@@ -518,7 +540,7 @@ async function startMatch(data1, data2, opts) {
   exitMatchBtn.classList.remove("hidden");
 
   const canvas = document.getElementById("canvas");
-  const ctx = canvas.getContext("2d");
+  const ctx = setupCanvas(canvas);
 
   // runMatch resolves once the whole match (not just a round) is decided,
   // with true if the vs-AI-only "Play Again" was clicked - see
@@ -641,7 +663,7 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
     // (e.g. the loser's empty health bar) through the whole next countdown.
     resetBars();
 
-    const stopPreFightRender = startPreFightRender(ctx, canvas, p1, p2);
+    const stopPreFightRender = startPreFightRender(ctx, p1, p2);
 
     // Taunts only play out on the very first round - hearing the same two
     // lines (spoken aloud, no less) every single round gets old fast.
@@ -665,7 +687,6 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
     const winner = await new Promise((resolve) => {
       const stopGame = createGame({
         ctx,
-        canvas,
         p1,
         p2,
         timeLimit,
@@ -755,9 +776,9 @@ function updateRoundInfo(roundNum, wins) {
     `ROUND ${roundNum} · ${wins.p1} - ${wins.p2}`;
 }
 
-function startPreFightRender(ctx, canvas, p1, p2) {
+function startPreFightRender(ctx, p1, p2) {
   let raf = requestAnimationFrame(function frame() {
-    drawArena(ctx, canvas.width, canvas.height);
+    drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
     drawFighter(ctx, p1, 1);
     drawFighter(ctx, p2, 2);
     raf = requestAnimationFrame(frame);
