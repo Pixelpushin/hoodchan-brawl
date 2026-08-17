@@ -99,7 +99,17 @@ const KNOCKBACK_ARC_HEIGHT = 55;
 // shortened to match (6 game-frames per sheet frame, same pacing the old
 // 4-frame/24-duration sheet used), active window re-timed to the strike
 // frame specifically (frame 1, verified against the art).
-export const UPPERCUT = { duration: 18, activeStart: 6, activeEnd: 11, damage: 14, range: 80, height: 90, knockback: 100 };
+//
+// cost/damage: this move was free (no `cost` at all) for a long time - a
+// real balance bug, not a deliberate design choice, and the single most
+// common complaint across every fork of this game. Free meant it strictly
+// dominated kick (14 damage vs kick's 10, PLUS anti-air, PLUS knockback,
+// for zero resource cost) - there was no reason to ever throw a kick
+// instead. Now costs more than kick (a stronger commit, given the anti-air/
+// knockback utility on top) and does the same damage as kick rather than
+// more - the payoff for landing one is still real (knockback, catching a
+// jump), it just isn't also free chip damage on top.
+export const UPPERCUT = { duration: 18, activeStart: 6, activeEnd: 11, damage: 10, range: 80, height: 90, knockback: 100, cost: 25 };
 // Archetype-specific specials. Flipper (rat rush) and Collector (bolt) are
 // ranged, spawned via spawnProjectile in game.js off the shared "special"
 // cast pose. Builder and Hodler are melee with their own dedicated sheets/
@@ -340,9 +350,13 @@ export class Fighter {
       this.lastEvent = "jump-start";
       return;
     }
-    if (input.uppercut) {
+    if (input.uppercut && this.power >= UPPERCUT.cost) {
       // Not edge-triggered - holding this is the actual charge mechanic
       // (see the uppercut-charge branch above), not something to spam.
+      // Cost is spent on commit (entering the charge), same as kick/slide/
+      // special all spend on their own activation - getting hit out of the
+      // charge still cost the power, same as whiffing a kick would.
+      this.spendPower(UPPERCUT.cost);
       this.setState("uppercut-charge");
       return;
     }
