@@ -203,43 +203,20 @@ async function fetchTokenMetadataUnthrottled(tokenId) {
   };
 }
 
-// The character-select grid can request up to 24 tokens at once (12 per
-// panel × 2 panels loading their first page together), and each one needs
-// 2 sequential /api/ipfs proxy round-trips (metadata, then image) - left
-// uncoordinated, that's dozens of requests hitting our own proxy (which
-// itself is racing 5 upstream gateways per request) all at once. Verified
-// live: even server-side, with no CORS involved at all, those upstream
-// gateways still fail under real concurrent load for this collection's
-// CIDs - matches the real h00dchan app's own documented history with these
-// same public gateways. Queuing to a small, steady number in flight at a
-// time reduces that pressure; same idea as this file's own
-// OWNERSHIP_CHECK_CONCURRENCY batching for wallet ownership checks, just as
-// a general-purpose queue instead of a fixed-size batch loop, since callers
-// here (main.js's Promise.all over a page of cards) don't chunk their own
-// requests. Kept low (2, not higher) since the proxy's own retry-on-failure
-// (see api/ipfs.js) already doubles each token's worst-case request count.
-const MAX_CONCURRENT_TOKEN_FETCHES = 2;
-let activeTokenFetches = 0;
-const tokenFetchQueue = [];
-
-function runQueued(task) {
-  return new Promise((resolve, reject) => {
-    const run = () => {
-      activeTokenFetches++;
-      task().then(resolve, reject).finally(() => {
-        activeTokenFetches--;
-        const next = tokenFetchQueue.shift();
-        if (next) next();
-      });
-    };
-    if (activeTokenFetches < MAX_CONCURRENT_TOKEN_FETCHES) {
-      run();
-    } else {
-      tokenFetchQueue.push(run);
-    }
-  });
-}
-
+// A global client-side throttle used to live here (cap N tokens in flight
+// at once, queue the rest) to protect the free public IPFS gateways from
+// burst load. Removed after wiring up a dedicated gateway (see api/ipfs.js
+// + ADAPTERS.md) - it's built to handle real concurrent traffic, that's
+// the point of paying for one, and a single shared FIFO queue actively hurt
+// the UX once fetches got fast: the character-select screen's two panels
+// both request 12 tokens at once, and a shared queue processed panel one's
+// items to completion before panel two's ever got a turn (verified live -
+// P1 fully loaded while P2 sat at zero cards for several extra seconds,
+// even though nothing was actually failing). If you're running this
+// adapter WITHOUT a dedicated gateway configured (see ADAPTERS.md), the
+// public-gateway race is still what's slow/flaky under load, not this file
+// - reintroducing a queue here wouldn't fix that, configuring a gateway
+// would.
 export function fetchTokenMetadata(tokenId) {
-  return runQueued(() => fetchTokenMetadataUnthrottled(tokenId));
+  return fetchTokenMetadataUnthrottled(tokenId);
 }
