@@ -119,44 +119,38 @@ export async function fetchWalletTokenIdsOnChain(address) {
   return owned;
 }
 
-// Gateway order verified live against this collection's actual CIDs (see
-// the source h00dchan app's lib/chain.ts) - ipfs.io and Pinata's shared
-// public gateway are both known-congested/slow for this content, listed
-// last as fallbacks rather than led with. dweb.link/w3s.link/nftstorage.link
-// consistently answered fastest. No dedicated/paid gateway here (unlike the
-// source app) - this is a public, zero-config static site, not something
-// that should ship someone else's paid API token.
-const PUBLIC_IPFS_GATEWAYS = [
-  (cidPath) => `https://dweb.link/ipfs/${cidPath}`,
-  (cidPath) => `https://w3s.link/ipfs/${cidPath}`,
-  (cidPath) => `https://nftstorage.link/ipfs/${cidPath}`,
-  (cidPath) => `https://ipfs.io/ipfs/${cidPath}`,
-  (cidPath) => `https://gateway.pinata.cloud/ipfs/${cidPath}`,
-];
-
+// Routed through our own /api/ipfs proxy (see api/ipfs/[...path].js) rather
+// than hitting public IPFS gateways directly from the browser. CORS is a
+// browser-only restriction - verified live that 4 of 5 public gateways
+// (w3s.link, nftstorage.link, ipfs.io, gateway.pinata.cloud) send no CORS
+// header at all for this collection's content, on effectively every
+// request, not intermittently. That made a client-side gateway race mostly
+// a race against guaranteed failures: every fetch paid for those 4
+// failures before whichever gateway actually worked won anyway. The proxy
+// runs server-to-server (no CORS exposure there at all, by definition) and
+// does that same multi-gateway racing itself, invisibly - this file no
+// longer needs to know which gateways exist or whether they support CORS.
+//
+// Trade-off worth knowing: this means the hoodchan adapter needs the /api
+// routes to actually be running to load any art - `python3 -m http.server`
+// (the plain static-file workflow every other adapter here supports) won't
+// serve them, so local testing needs `vercel dev` instead. Every other
+// adapter still works with the plain static server; this is the one
+// exception, and it's inherent to HOODCHAN's own IPFS-based storage, not
+// something a from-scratch adapter for a different collection would
+// necessarily need.
 function ipfsUriToPath(uri) {
   return uri.replace(/^ipfs:\/\//, "").replace(/^ipfs\//, "");
 }
 
-// Races every gateway concurrently rather than trying them one at a time -
-// a sequential fallback at an 8s timeout each could take up to 40s to fail
-// on a single slow CID (this exact failure mode is documented as having
-// happened in production against the source h00dchan app). Racing bounds
-// the worst case to ~8s and usually resolves much faster, since whichever
-// gateway is fastest right now wins instead of always paying for a fixed
-// first choice even on days it's the slow one.
+function ipfsProxyUrl(uri) {
+  return `/api/ipfs?path=${encodeURIComponent(ipfsUriToPath(uri))}`;
+}
+
 async function fetchIpfsJson(uri) {
-  const cidPath = ipfsUriToPath(uri);
-  const attempts = PUBLIC_IPFS_GATEWAYS.map(async (gateway) => {
-    const res = await fetch(gateway(cidPath), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`IPFS gateway responded ${res.status}`);
-    return res.json();
-  });
-  try {
-    return await Promise.any(attempts);
-  } catch (err) {
-    throw new Error(`All IPFS gateways failed: ${err instanceof AggregateError ? err.errors.map((e) => e?.message ?? String(e)).join("; ") : String(err)}`);
-  }
+  const res = await fetch(ipfsProxyUrl(uri), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`IPFS proxy responded ${res.status}`);
+  return res.json();
 }
 
 function parseTokenURI(uri) {
@@ -172,38 +166,32 @@ function parseTokenURI(uri) {
   return fetch(uri).then((r) => r.json());
 }
 
-// Same Promise.any gateway race as fetchIpfsJson, but for the actual image
-// bytes rather than JSON - a plain <img src="https://gateway/..."> has no
-// equivalent fallback of its own (it just uses whichever single URL it's
-// given), and individual gateways are observably flaky per-CID for this
-// collection even though the content itself is available elsewhere (see
-// the module header comment) - verified live: dweb.link alone hung
-// indefinitely on some of this collection's image CIDs while the JSON
-// metadata (a different CID) loaded fine. Returns a data: URI so the
-// result is also safe to draw onto a <canvas> and read back
-// (toDataURL/getImageData) without cross-origin taint, which the circle/
-// crop head-image processing in ../shared/head-image.js needs to do.
-async function fetchIpfsImageDataUri(uri) {
-  const cidPath = ipfsUriToPath(uri);
-  const attempts = PUBLIC_IPFS_GATEWAYS.map(async (gateway) => {
-    const res = await fetch(gateway(cidPath), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`IPFS gateway responded ${res.status}`);
-    const blob = await res.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
-      reader.readAsDataURL(blob);
-    });
+function blobToDataUri(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(blob);
   });
-  try {
-    return await Promise.any(attempts);
-  } catch (err) {
-    throw new Error(`All IPFS gateways failed for image: ${err instanceof AggregateError ? err.errors.map((e) => e?.message ?? String(e)).join("; ") : String(err)}`);
-  }
 }
 
-export async function fetchTokenMetadata(tokenId) {
+// Same proxy as fetchIpfsJson, but for the actual image bytes rather than
+// JSON. Returns a data: URI so the result is also safe to draw onto a
+// <canvas> and read back (toDataURL/getImageData) without cross-origin
+// taint, which the circle/crop head-image processing in
+// ../shared/head-image.js needs to do - our own /api/ipfs proxy sets an
+// Access-Control-Allow-Origin header (see api/ipfs/[...path].js), so this
+// would actually be canvas-safe even without the data: URI conversion, but
+// the conversion is kept anyway since it's what makes this cacheable as a
+// plain string on the returned fighter-data object.
+async function fetchIpfsImageDataUri(uri) {
+  const res = await fetch(ipfsProxyUrl(uri), { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`IPFS proxy responded ${res.status}`);
+  const blob = await res.blob();
+  return blobToDataUri(blob);
+}
+
+async function fetchTokenMetadataUnthrottled(tokenId) {
   const uri = await readTokenURI(tokenId);
   const metadata = await parseTokenURI(uri);
   const image = typeof metadata.image === "string" ? metadata.image : "";
@@ -213,4 +201,45 @@ export async function fetchTokenMetadata(tokenId) {
     image: image ? await fetchIpfsImageDataUri(image) : "",
     attributes: Array.isArray(metadata.attributes) ? metadata.attributes : [],
   };
+}
+
+// The character-select grid can request up to 24 tokens at once (12 per
+// panel × 2 panels loading their first page together), and each one needs
+// 2 sequential /api/ipfs proxy round-trips (metadata, then image) - left
+// uncoordinated, that's dozens of requests hitting our own proxy (which
+// itself is racing 5 upstream gateways per request) all at once. Verified
+// live: even server-side, with no CORS involved at all, those upstream
+// gateways still fail under real concurrent load for this collection's
+// CIDs - matches the real h00dchan app's own documented history with these
+// same public gateways. Queuing to a small, steady number in flight at a
+// time reduces that pressure; same idea as this file's own
+// OWNERSHIP_CHECK_CONCURRENCY batching for wallet ownership checks, just as
+// a general-purpose queue instead of a fixed-size batch loop, since callers
+// here (main.js's Promise.all over a page of cards) don't chunk their own
+// requests. Kept low (2, not higher) since the proxy's own retry-on-failure
+// (see api/ipfs.js) already doubles each token's worst-case request count.
+const MAX_CONCURRENT_TOKEN_FETCHES = 2;
+let activeTokenFetches = 0;
+const tokenFetchQueue = [];
+
+function runQueued(task) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      activeTokenFetches++;
+      task().then(resolve, reject).finally(() => {
+        activeTokenFetches--;
+        const next = tokenFetchQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeTokenFetches < MAX_CONCURRENT_TOKEN_FETCHES) {
+      run();
+    } else {
+      tokenFetchQueue.push(run);
+    }
+  });
+}
+
+export function fetchTokenMetadata(tokenId) {
+  return runQueued(() => fetchTokenMetadataUnthrottled(tokenId));
 }
