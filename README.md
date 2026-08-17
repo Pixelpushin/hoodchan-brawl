@@ -74,6 +74,22 @@ The game keeps a lightweight, ambient win/loss record per Hoodie token ID - full
 
 Unauthenticated by design, same trust model as everything else here (no wallet writes, nothing on-chain) - treat it as a fun social signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo).
 
+### X account linking
+
+Lets a visitor attach their X (Twitter) handle to whatever wallet address they connected, so it can be shown as a display label elsewhere in the app - same ambient/unauthenticated trust model as the rest of this API, not an account system.
+
+- `GET /api/x-auth/start?address=0x...` - kicks off X's OAuth 2.0 Authorization Code + PKCE flow, redirects to X's consent screen
+- `GET /api/x-auth/callback` - X redirects back here with a code; exchanged for the account's `@handle`, stored against the wallet address, then redirects to `/?xLinked=<handle>` (or `/?xLinkError=<reason>`)
+- `GET /api/wallet/{address}/x-handle` - read the linked handle for a wallet, if any
+
+Requires these environment variables (Vercel project settings, not committed anywhere):
+
+| Variable | Where it comes from |
+| --- | --- |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash-for-Redis Vercel integration (auto-injected) |
+| `X_CLIENT_ID` / `X_CLIENT_SECRET` | console.x.com → app → Keys & Tokens → OAuth 2.0 Keys |
+| `X_AUTH_REDIRECT_URI` | This deployment's own `/api/x-auth/callback` URL - must exactly match a callback URL registered in that same X app's User authentication settings |
+
 ## License
 
 The **code** in this repo is public domain (CC0) — see [LICENSE](LICENSE). Fork it, remix it, ship your own version, no permission needed.
