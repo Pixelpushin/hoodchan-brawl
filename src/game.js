@@ -434,7 +434,7 @@ export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = 
     // slide, and doesn't take damage from it either - the slider just stops
     // dead on contact instead of connecting or passing through, because they
     // hold their ground.
-    if (defender.data.hoodieType === "Hodler" && defender.state === "specialLow") {
+    if (defender.data.archetypeKey === "Hodler" && defender.state === "specialLow") {
       attacker.hasHit = true;
       attacker.lastEvent = "slide-stopped";
       shake = Math.max(shake, SHAKE_ON_HIT);
@@ -496,7 +496,7 @@ export function createGame({ ctx, canvas, p1, p2, onEnd, timeLimit = 60, p2AI = 
   // checkHodlerSpecialHit below).
   function spawnProjectile(fighter) {
     if (fighter.lastEvent !== "special-release") return;
-    const isRatRush = fighter.data.hoodieType === "Flipper";
+    const isRatRush = fighter.data.archetypeKey === "Flipper";
     if (!isRatRush) playSound("boltWhoosh", { volume: 0.6 });
     projectiles.push({
       kind: isRatRush ? "ratrush" : "bolt",

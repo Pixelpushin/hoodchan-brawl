@@ -35,11 +35,19 @@ jobs:
         run: npm install -g vercel@latest
 
       - name: Pull Vercel project settings
+        # VERCEL_ORG_ID/VERCEL_PROJECT_ID deliberately come from repo
+        # secrets, not hardcoded here - this workflow was copied from
+        # hoodies-fight during the initial seed with THAT project's real IDs
+        # hardcoded in, which would have silently deployed this repo's
+        # builds onto hoodies-fight's live production site the first time
+        # this ran. Set both as secrets on this repo (Settings > Secrets and
+        # variables > Actions) once pfp-brawl has its own Vercel project -
+        # until then this step fails closed instead of deploying anywhere.
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: team_ouRkOrPZM1iixqwAQlZ0kdnk
-          VERCEL_PROJECT_ID: prj_9ppd42yUwRsd6du5WhrSAmkwuCdf
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
       - name: Build (runs scripts/stamp-version.sh via vercel.json)
         run: vercel build --prod --token="$VERCEL_TOKEN"

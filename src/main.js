@@ -1,4 +1,4 @@
-import { loadFighterData, fetchWalletHoodies, fetchToken } from "./api.js";
+import { activeAdapter } from "./adapters/index.js";
 import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS } from "./fighter.js";
 import { createGame } from "./game.js";
 import { initSound, playSound, playRandomTrack, stopMusic } from "./sound.js";
@@ -8,6 +8,32 @@ import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet
 import { initBloodCode } from "./blood-code.js";
 
 initBloodCode();
+
+// Reskins the static HTML for whichever collection src/adapters/index.js
+// currently points at - title, hero copy, and the OpenSea/marketplace links
+// all come from the adapter's config instead of being hardcoded, so
+// swapping the active adapter reskins the page without touching index.html.
+function applyCollectionBranding() {
+  const { config } = activeAdapter;
+  document.title = config.siteTitle;
+  const h1 = document.querySelector("h1");
+  if (h1) h1.lastChild.textContent = config.siteTitle.toUpperCase();
+  const walletDesc = document.getElementById("wallet-play-desc");
+  if (walletDesc) walletDesc.textContent = config.walletPlayDesc;
+  for (const el of [openseaBtnEl(), document.getElementById("footer-collection-link")]) {
+    if (!el) continue;
+    if (config.collectionUrl) {
+      el.href = config.collectionUrl;
+    } else {
+      el.classList.add("hidden");
+    }
+  }
+  const openseaBtn = openseaBtnEl();
+  if (openseaBtn) openseaBtn.textContent = config.collectionCta;
+}
+function openseaBtnEl() {
+  return document.getElementById("opensea-btn");
+}
 
 // Space's default browser behavior is "scroll the page down" - game.js only
 // guards against that once an actual match is running (its own keydown
@@ -113,18 +139,17 @@ exitMatchBtn.addEventListener("click", () => {
   location.reload();
 });
 
+applyCollectionBranding();
+
 // Rotated randomly per visit so the same line doesn't go stale. Both play
 // options read clearly on their own now (see index.html's #play-options),
 // so this no longer needs to be split by mode - one clear line setting up
-// the card(s) below is enough either way.
-const HYPE_LINES = [
-  "Choose how you want to play:",
-  "Two Hoodies enter. One AI leaves in pieces.",
-  "Free to play, or bring your own Hoodie.",
-];
+// the card(s) below is enough either way. Lines themselves come from the
+// active adapter's config, not hardcoded here.
 function setHype() {
   if (!hypeEl) return;
-  hypeEl.textContent = HYPE_LINES[Math.floor(Math.random() * HYPE_LINES.length)];
+  const lines = activeAdapter.config.hypeLines;
+  hypeEl.textContent = lines[Math.floor(Math.random() * lines.length)];
 }
 setHype();
 
@@ -134,12 +159,18 @@ setHype();
 // only ever hides the wallet option, never the free one.
 function hideWalletOption() {
   document.getElementById("wallet-play").classList.add("hidden");
-  // Some HYPE_LINES mention bringing a Hoodie - not a real option once the
-  // wallet card is gone, so replace whichever one setHype already picked.
+  // Some hype lines mention bringing your own NFT - not a real option once
+  // the wallet card is gone, so replace whichever one setHype already picked.
   if (hypeEl) hypeEl.textContent = "Pick two fighters and jump in.";
 }
 
-if (hasInjectedWallet()) {
+// No config.chain at all means the active adapter has nothing to check
+// wallet ownership against yet (see the template adapter) - wallet-connect
+// isn't just empty in that case, it's not a real option, so skip straight
+// past the "does this visitor have a wallet extension" check entirely.
+if (!activeAdapter.config.chain) {
+  hideWalletOption();
+} else if (hasInjectedWallet()) {
   tryResumeWalletSession();
 } else {
   // Some wallet extensions inject window.ethereum asynchronously, slightly
@@ -166,8 +197,8 @@ if (hasInjectedWallet()) {
 //
 // MK-style: two independent panels (P1 left, P2 right), each its own pool
 // of token IDs to page through, each with its own big animated portrait.
-// P1's pool is the connected wallet's real Hoodies (paginated - see
-// fetchWalletHoodies's own pagination fix) if one's connected, otherwise a
+// P1's pool is the connected wallet's real tokens (paginated - see the
+// active adapter's fetchWalletTokenIds) if one's connected, otherwise a
 // random sample same as P2 always is (P2 is always AI for now - there's no
 // second wallet to pull from). Deliberately built as two symmetric,
 // independent panels rather than one shared grid both sides pick from in
@@ -178,7 +209,6 @@ if (hasInjectedWallet()) {
 
 const PANEL_PAGE_SIZE = 12;
 const RANDOM_POOL_SIZE = 48;
-const MAX_TOKEN_ID = 5999;
 const ARENA_BG_IMAGES = ["assets/backgrounds/arena-2.png", "assets/backgrounds/arena-3.png"];
 
 const selectScreen = document.getElementById("select-screen");
@@ -217,14 +247,6 @@ window.addEventListener("resize", fitSelectScreen);
 // this never re-fires from fitSelectScreen's own scale write.
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => fitSelectScreen()).observe(selectContent);
-}
-
-function randomTokenPool(count) {
-  const pool = new Set();
-  while (pool.size < count) {
-    pool.add(1 + Math.floor(Math.random() * MAX_TOKEN_ID));
-  }
-  return [...pool];
 }
 
 const panelState = {
@@ -353,24 +375,24 @@ function updateReadyState() {
   readyBtn.disabled = !(panelState.p1.selectedData && panelState.p2.selectedData);
 }
 
-async function selectFighter(side, tokenId, token) {
+async function selectFighter(side, tokenId, preview) {
   const grid = side === "p1" ? p1Grid : p2Grid;
   for (const card of grid.querySelectorAll(".character-card")) {
     card.classList.toggle("selected", Number(card.dataset.tokenId) === tokenId);
   }
   panelState[side].selectedId = tokenId;
   const label = side === "p1" ? p1Label : p2Label;
-  const type = token.traits?.hoodie ?? "Builder";
-  label.textContent = `${token.token?.name ?? `#${tokenId}`} - ${type}`;
+  const type = preview.archetypeKey ?? "Builder";
+  label.textContent = `${preview.name ?? `#${tokenId}`} - ${type}`;
   fitSelectScreen();
 
   try {
-    const data = await loadFighterData(tokenId);
+    const data = await activeAdapter.fetchFighterData(tokenId);
     panelState[side].selectedData = data;
     portraits[side].setHead(data.imageUrl);
     updateReadyState();
   } catch {
-    label.textContent = "Couldn't load that Hoodie - try another.";
+    label.textContent = `Couldn't load that ${activeAdapter.config.unitName} - try another.`;
     fitSelectScreen();
   }
 }
@@ -382,10 +404,10 @@ async function renderPanel(side) {
 
   grid.innerHTML = `<div class="grid-loading"><div class="spinner"></div></div>`;
 
-  const tokens = await Promise.all(
+  const previews = await Promise.all(
     pageIds.map(async (id) => {
       try {
-        return await fetchToken(id);
+        return await activeAdapter.fetchTokenPreview(id);
       } catch {
         return null;
       }
@@ -393,24 +415,22 @@ async function renderPanel(side) {
   );
 
   grid.innerHTML = "";
-  tokens.forEach((token, i) => {
-    if (!token) return;
+  previews.forEach((preview, i) => {
+    if (!preview) return;
     const id = pageIds[i];
-    const type = token.traits?.hoodie ?? "Builder";
-    const { dress, mouth, top, eyes } = token.traits ?? {};
-    const rareTraitCount = [dress, mouth, top, eyes].filter((t) => t?.tier === "Rare").length;
+    const type = preview.archetypeKey ?? "Builder";
     const info = ARCHETYPE_INFO[type];
     const card = document.createElement("div");
     card.className = "character-card";
     card.dataset.tokenId = id;
     if (state.selectedId === id) card.classList.add("selected");
     card.innerHTML = `
-      <img src="${token.image?.svg ?? ""}" alt="${type}" />
+      <img src="${preview.previewImageUrl ?? ""}" alt="${type}" />
       <div class="card-label">${type}</div>
       ${info ? `<div class="card-badge">${info.emoji}</div>` : ""}
     `;
-    card.addEventListener("click", () => selectFighter(side, id, token));
-    if (info) attachBadgeTooltip(card.querySelector(".card-badge"), archetypeTooltip(type, rareTraitCount));
+    card.addEventListener("click", () => selectFighter(side, id, preview));
+    if (info) attachBadgeTooltip(card.querySelector(".card-badge"), archetypeTooltip(type, preview.rareTraitCount ?? 0));
     grid.appendChild(card);
   });
 
@@ -459,8 +479,8 @@ async function enterSelectScreen(walletTokenIds) {
     `url(${ARENA_BG_IMAGES[Math.floor(Math.random() * ARENA_BG_IMAGES.length)]})`,
   );
 
-  panelState.p1 = { pool: walletTokenIds?.length ? walletTokenIds : randomTokenPool(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
-  panelState.p2 = { pool: randomTokenPool(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
+  panelState.p1 = { pool: walletTokenIds?.length ? walletTokenIds : activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
+  panelState.p2 = { pool: activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
   p1Label.textContent = "CHOOSE YOUR FIGHTER";
   p2Label.textContent = "CHOOSE YOUR OPPONENT";
   updateReadyState();
@@ -488,8 +508,8 @@ async function startMatch(data1, data2, opts) {
   selectScreen.classList.add("hidden");
   document.getElementById("arena").classList.remove("hidden");
   fitArenaCanvas();
-  document.getElementById("p1-name").textContent = `${data1.name} (${data1.hoodieType})`;
-  document.getElementById("p2-name").textContent = `${data2.name} (${data2.hoodieType})`;
+  document.getElementById("p1-name").textContent = `${data1.name} (${data1.archetypeKey})`;
+  document.getElementById("p2-name").textContent = `${data2.name} (${data2.archetypeKey})`;
   document.getElementById("p1-pfp").src = data1.avatarUrl;
   document.getElementById("p2-pfp").src = data2.avatarUrl;
   // Universal for any match, not just practice - a normal AI match had no
@@ -526,17 +546,18 @@ startBtn.addEventListener("click", () => {
 // gesture backs this call (unlockSound), since initSound()/an audible
 // click sound both need one and the resume path doesn't have one to spend.
 async function proceedWithWallet(address, { unlockSound }) {
-  walletStatus.textContent = "Scanning the chain for your Hoodies...";
+  const { unitName, unitNamePlural } = activeAdapter.config;
+  walletStatus.textContent = `Scanning the chain for your ${unitNamePlural}...`;
   showWalletChip(address);
   const soundReady = unlockSound ? initSound() : Promise.resolve();
 
   try {
-    const tokenIds = await fetchWalletHoodies(address);
+    const tokenIds = await activeAdapter.fetchWalletTokenIds(address);
     await soundReady;
     if (unlockSound) playSound("uiclick");
 
     if (!tokenIds.length) {
-      walletStatus.textContent = "No Hoodies in this wallet yet - grab one and come back swinging.";
+      walletStatus.textContent = `No ${unitNamePlural} in this wallet yet - grab one and come back swinging.`;
       openseaBtn.classList.remove("hidden");
       // Not everyone with a wallet wants to buy in just to try it out - this
       // drops them straight into the same free select-screen flow as
@@ -548,7 +569,7 @@ async function proceedWithWallet(address, { unlockSound }) {
 
     openseaBtn.classList.add("hidden");
     freePlayBtn.classList.add("hidden");
-    walletStatus.textContent = `${tokenIds.length} Hoodie${tokenIds.length === 1 ? "" : "s"} found - pick your fighter.`;
+    walletStatus.textContent = `${tokenIds.length} ${tokenIds.length === 1 ? unitName : unitNamePlural} found - pick your fighter.`;
     enterSelectScreen(tokenIds);
   } catch (err) {
     walletStatus.textContent = err.message;
@@ -563,7 +584,7 @@ connectWalletBtn.addEventListener("click", async () => {
   freePlayBtn.classList.add("hidden");
 
   try {
-    const address = await connectWallet();
+    const address = await connectWallet(activeAdapter.config.chain);
     await proceedWithWallet(address, { unlockSound: true });
   } catch (err) {
     walletStatus.textContent = err.message;

@@ -1,21 +1,23 @@
-# Hood Vs Hood
+# PFP Brawl
 
-![Hood Vs Hood logo](assets/branding/logo.png)
+![PFP Brawl logo](assets/branding/logo.png)
 
-A browser fighting game built on top of [OnChainHoodies](https://onchainhoodies.xyz) — pick a Hoodie token ID (or connect a wallet and fight as one you actually hold), their real on-chain art becomes the fighter's head, and their archetype and Hood Talk quotes drive gameplay. No wallet writes, no wagering, nothing on-chain from this game itself — purely social.
+A generalized pixel-art fighting game engine for any PFP/NFT collection. Pick a token (or connect a wallet and fight as one you actually hold), that collection's own art becomes the fighter's head, and one of 4 fixed archetypes (Builder/Flipper/Hodler/Collector) drives their stats and special attack. No wallet writes, no wagering, nothing on-chain from this game itself — purely social.
 
-Play: [hoodvshood.lol](https://hoodvshood.lol)
+Forked from [hoodies-fight](https://github.com/Pixelpushin/hoodies-fight), which stays as the finished, single-player, [OnChainHoodies](https://onchainhoodies.xyz)-only game. This repo is where the collection gets swapped out: everything OnChainHoodies-specific now lives behind a single adapter module (`src/adapters/onchainhoodies/`) instead of being wired directly into the game — see [ADAPTERS.md](ADAPTERS.md) for how to plug in a different collection entirely, and `src/adapters/template/` for a working, zero-network example to copy.
+
+Not deployed yet - no live URL exists for this repo. See [Deploying](#deploying) below for what's needed before it can be.
 
 ## How it works
 
-- **Free play**: pick any two Hoodie token IDs and fight the AI. No wallet needed.
-- **Wallet play**: connect a wallet, and if it holds any OnChainHoodies, pick one to fight as against the AI. Ownership is read directly from-chain (Robinhood Chain, contract `0x9ec6c5...735f45`) if the OnChainHoodies API is down, so wallet play still works either way.
-- Archetype (Builder/Flipper/Hodler/Collector) drives a fighter's stats *and* their special attack:
+- **Free play**: pick any two tokens from the active adapter's collection and fight the AI. No wallet needed.
+- **Wallet play** (if the active adapter supports it): connect a wallet, and if it holds any tokens from that collection, pick one to fight as against the AI.
+- Archetype (Builder/Flipper/Hodler/Collector) drives a fighter's stats *and* their special attack - fixed by the engine, not by whichever collection is plugged in:
   - **Builder** — hits harder, and their special is a big flying high kick.
-  - **Flipper** — moves faster, and their special is a Hood Rat Rush (a rat swarm charging along the ground).
+  - **Flipper** — moves faster, and their special is a rat-rush-style swarm charging along the ground.
   - **Hodler** — more health, and their special is a low sweep kick that blocks incoming hits and stops an opponent's slide dead.
   - **Collector** — blocks better, and their special is the long-range bolt.
-  - Rare-tier traits add a small health bonus on top.
+  - Rare-tier traits (if the active collection has them) add a small health bonus on top.
 - Punch is free and builds your power meter slowly; landing hits and successful blocks build it faster. Kick, slide, uppercut, and special all spend power or carry real risk on a whiff.
 - Jump high enough to cross over an opponent; slide low enough to pass under one who jumps. See the in-game controls legend for the full move list.
 
@@ -27,50 +29,64 @@ No build step, no dependencies — plain HTML/JS/Canvas, ES modules throughout.
 python3 -m http.server 8420
 ```
 
-Then open `http://localhost:8420`.
+Then open `http://localhost:8420`. Ships with the OnChainHoodies adapter active by default (`src/adapters/index.js`) - swap the one import there to try `src/adapters/template/` instead, no API/wallet/keys needed for that one.
 
-## Verifying the live site
+## Deploying
 
-This matters most if you're deciding whether to connect a wallet: [hoodvshood.lol](https://hoodvshood.lol) never writes to your wallet or requests a signature for anything beyond reading your address, but you shouldn't have to take that on faith.
+This repo isn't deployed anywhere yet. Before it can be:
 
-- **Quick check**: every page load shows a footer at the bottom - "Running commit `<sha>`" - linking straight to that exact commit on GitHub. Click through and read the real source, particularly `src/wallet.js` (all it does is `eth_requestAccounts` and a chain switch) and `src/chain.js`/`src/api.js` (read-only lookups, no writes).
+1. Create a Vercel project for it (the seeded `vercel.json`/`scripts/stamp-version.sh` already expect one) and point a real domain at it if you want one - do **not** reuse hoodies-fight's `hoodvshood.lol` or its Vercel project; this is a separate deploy.
+2. Set `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` as repo secrets so [.github/workflows/deploy.yml](.github/workflows/deploy.yml) can build/attest/deploy on push to `main` (see that file's own comments - it deliberately fails closed rather than falling back to any hardcoded project).
+3. If the OnChainHoodies adapter is staying active, no other config is needed (it has no API keys of its own). If X account linking is wanted, set the env vars documented below.
+
+## Verifying a live deploy
+
+Once deployed, the same verification story hoodies-fight uses applies here unchanged - worth checking before connecting a wallet to any instance of this game, this repo included:
+
+- **Quick check**: every page load shows a footer at the bottom - "Running commit `<sha>`" - linking straight to that exact commit on GitHub. Click through and read the real source, particularly `src/wallet.js` (all it does is `eth_requestAccounts` and a chain switch) and the active adapter's own fetch code (read-only lookups, no writes).
 - **Byte-for-byte check**: this is a zero-build static site - the deployed JS *is* the source JS, nothing is bundled or transformed. Pick any file and diff it against the commit shown in the footer:
 
   ```bash
-  curl -s https://hoodvshood.lol/src/wallet.js -o live.js
-  curl -s https://raw.githubusercontent.com/Pixelpushin/hoodies-fight/<commit-sha>/src/wallet.js -o repo.js
+  curl -s https://<your-deployment-domain>/src/wallet.js -o live.js
+  curl -s https://raw.githubusercontent.com/Pixelpushin/pfp-brawl/<commit-sha>/src/wallet.js -o repo.js
   diff live.js repo.js  # no output = identical
   ```
 
-- **Cryptographic check**: every deploy is built inside a GitHub Actions runner (not on Vercel's own infra) and signed with a [build provenance attestation](https://github.com/Pixelpushin/hoodies-fight/attestations) before that exact build is pushed to Vercel unmodified (`vercel deploy --prebuilt`) - so the attestation actually covers what's live, not just what GitHub happened to build somewhere. See [docs/SITE-INTEGRITY-RESEARCH.md](docs/SITE-INTEGRITY-RESEARCH.md) for what this does and doesn't cover.
+- **Cryptographic check**: [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds inside a GitHub Actions runner (not on Vercel's own infra) and signs a build provenance attestation before that exact build is pushed to Vercel unmodified (`vercel deploy --prebuilt`) - so the attestation actually covers what's live, not just what GitHub happened to build somewhere. See [docs/SITE-INTEGRITY-RESEARCH.md](docs/SITE-INTEGRITY-RESEARCH.md) for what this does and doesn't cover.
 
 ## Project layout
 
 ```text
-index.html          Markup + setup/arena screens
-style.css            All styling
-src/main.js          Setup flow, wallet/local routing, round loop
-src/game.js           Per-frame combat loop: hit detection, physics, FX
-src/fighter.js        Fighter state machine (moves, damage, archetypes)
-src/body.js           Sprite sheets, animation lookup, canvas drawing
-src/ai.js             AI opponent controller
-src/api.js            OnChainHoodies API client + head-art cropping
-src/chain.js          Raw JSON-RPC on-chain fallback (no wallet needed)
-src/wallet.js         EIP-1193 wallet connect + chain switching
-src/sound.js           SFX playback
-src/tts.js             Spoken taunts/victory lines
-assets/               Sprite sheets, backgrounds, FX, sounds, branding
-api/                  Serverless functions backing the match-record API (see below)
-openapi.json          API spec for api/
+index.html               Markup + setup/arena screens
+style.css                All styling
+src/main.js               Setup flow, wallet/local routing, round loop
+src/game.js                Per-frame combat loop: hit detection, physics, FX
+src/fighter.js              Fighter state machine (moves, damage, archetypes)
+src/body.js                 Sprite sheets, animation lookup, canvas drawing
+src/ai.js                   AI opponent controller
+src/api.js                  This project's own match-record backend client only
+src/wallet.js                EIP-1193 wallet connect + chain switching (chain-agnostic)
+src/sound.js                  SFX playback
+src/tts.js                    Spoken taunts/victory lines
+src/adapters/                 Collection adapters - see ADAPTERS.md
+  adapters/index.js             Single swap point - which adapter is active
+  adapters/onchainhoodies/      Default adapter: REST API + on-chain fallback
+  adapters/template/            Minimal working example, zero network calls
+assets/                    Sprite sheets, backgrounds, FX, sounds, branding
+api/                       Serverless functions backing this project's own backend (see below)
+openapi.json               API spec for api/
+ADAPTERS.md                How to plug in a different NFT collection
 ```
 
-## Hood Vs Hood API
+## This project's own API
 
-The game keeps a lightweight, ambient win/loss record per Hoodie token ID - full spec at [openapi.json](https://hoodie.wtf/openapi.json).
+A lightweight, ambient win/loss record per token ID, plus optional X account linking - full spec at [openapi.json](openapi.json).
 
-- `GET /api/hoodie/{tokenId}/stats` - wins/losses/matches for one Hoodie
-- `GET /api/matches/recent?limit=25` - newest completed matches across all Hoodies
+- `GET /api/hoodie/{tokenId}/stats` - wins/losses/matches for one token
+- `GET /api/matches/recent?limit=25` - newest completed matches across all tokens
 - `POST /api/match-result` - called by the game client itself when a match ends
+
+**Known limitation**: this API's own path/storage (`/api/hoodie/...`, a 5999 token-id cap) is still hardcoded to the OnChainHoodies adapter specifically - it hasn't been generalized alongside the game engine yet. A different active adapter can still play the game fine; its match results just won't have anywhere collection-scoped to land yet. Namespacing this per-adapter (so two different collections' stats don't collide in the same Redis store) is a real next step, not done here.
 
 Unauthenticated by design, same trust model as everything else here (no wallet writes, nothing on-chain) - treat it as a fun social signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo).
 
@@ -92,25 +108,24 @@ Requires these environment variables (Vercel project settings, not committed any
 
 ## License
 
-The **code** in this repo is public domain (CC0) — see [LICENSE](LICENSE). Fork it, remix it, ship your own version, no permission needed.
+The **code** in this repo is [AGPL-3.0](LICENSE), not the CC0/public-domain license hoodies-fight uses - a deliberate choice for this fork specifically. AGPL means if you run a modified version of this game as a network service (host it for others to play), you have to make your modified source available too - it closes the "clone it, reskin it, host a competitor, never give anything back" loophole that a plain permissive license leaves open for a web app like this. You can still fork it, remix it, and run it privately with no obligations; the copyleft only kicks in once you're serving a modified version to others over a network.
 
-**Assets are not all CC0** - licensing is per-asset, not blanket:
+**Assets are not all under the code's license** - licensing is per-asset, not blanket, and doesn't change based on which repo the files sit in:
 
-- Character head art: pulled live from the OnChainHoodies API at runtime and never bundled in this repo - CC0, same as the collection itself.
-- **All sound effects** are paid [Splice](https://splice.com) samples, and **all music tracks** are [Suno](https://suno.com)-generated - licensed for use *in* this game, but neither license permits redistributing the raw files. They're gitignored (never committed) and served from a Vercel Blob store instead of `assets/sounds/`/`assets/music/` (see `src/sound.js`'s `AUDIO_BASE`) - keeps the raw files out of git entirely, and out of the [build-attestation pipeline](docs/SITE-INTEGRITY-RESEARCH.md), which only ever sees what's actually committed. (An earlier version of this README incorrectly credited the sound effects as CC0 Kenney packs - that was wrong, fixed here.) If you fork this repo, swap `AUDIO_BASE` for your own storage and supply your own audio, or leave it as-is and it'll just hotlink our copy - the game already treats a missing/failed clip as a soft warning, not a crash, so it degrades fine either way.
+- Character head art for the default OnChainHoodies adapter: pulled live from the OnChainHoodies API at runtime and never bundled in this repo - CC0, same as the collection itself. (A different adapter's art has whatever license that collection/source uses - see its own config/code.)
+- **All sound effects** are paid [Splice](https://splice.com) samples, and **all music tracks** are [Suno](https://suno.com)-generated - licensed for use *in* this game, but neither license permits redistributing the raw files. They're gitignored (never committed) and served from a Vercel Blob store instead of `assets/sounds/`/`assets/music/` (see `src/sound.js`'s `AUDIO_BASE`) - keeps the raw files out of git entirely, and out of the build-attestation pipeline, which only ever sees what's actually committed. If you fork this repo, swap `AUDIO_BASE` for your own storage and supply your own audio, or leave it as-is and it'll just hotlink the original's copy - the game already treats a missing/failed clip as a soft warning, not a crash, so it degrades fine either way.
 - Fighter sprite sheets (idle/walk/attack/kick/jump/hurt/crouch/block/spellcast, `assets/sprites/`) and both arena backgrounds (`assets/backgrounds/arena-2.png`, `arena-3.png`): AI-generated via SpriteCook.
 - `assets/backgrounds/arena.png` (unused, kept for reference): generated on Pixellab.
 - A handful of other sprite sheets (slide/knockback/uppercut/flex/rat-rush) have **unconfirmed provenance/licensing** and should not be assumed reusable - don't lift these into your own project without checking first. If you're forking this repo, swap them for something you know the rights to.
 
-CC0 (on the code) means credit is never legally required - if you build on this, a mention is appreciated but entirely up to you.
-
 ## Contributing
 
-This is meant to be built on, not gatekept. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up and what kinds of PRs are useful.
+This is meant to be built on, not gatekept. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up and what kinds of PRs are useful, and [ADAPTERS.md](ADAPTERS.md) if you're plugging in your own collection.
 
 ## Credits
 
 - Built by [Pixelpushin](https://github.com/Pixelpushin) - vibe-coded with [Claude Code](https://claude.com/claude-code), for better or worse
-- Character art: [OnChainHoodies](https://onchainhoodies.xyz) (CC0)
+- Forked from [hoodies-fight](https://github.com/Pixelpushin/hoodies-fight)
+- Default adapter's character art: [OnChainHoodies](https://onchainhoodies.xyz) (CC0)
 - Sound effects: [Splice](https://splice.com) (licensed, not redistributed - see License section)
 - Music: [Suno](https://suno.com) (licensed, not redistributed - see License section)

@@ -1,11 +1,10 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Hood Vs Hood API",
+    "title": "PFP Brawl API",
     "version": "1.0.0",
-    "description": "Ambient match-record data for Hood Vs Hood, a browser fighting game built on OnChainHoodies (https://onchainhoodies.xyz). Tracks how many times each Hoodie token ID has fought and won/lost in-game. Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/hoodies-fight"
+    "description": "Ambient match-record data for PFP Brawl, a generalized fighting game engine (see ADAPTERS.md) currently running its default OnChainHoodies (https://onchainhoodies.xyz) adapter. Tracks how many times each token ID has fought and won/lost in-game - paths/limits below are still specific to that default adapter (see README's 'Known limitation'). Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/pfp-brawl. Not deployed yet - no `servers` entry until a real deployment exists (see README's Deploying section)."
   },
-  "servers": [{ "url": "https://hoodie.wtf" }],
   "paths": {
     "/api/hoodie/{tokenId}/stats": {
       "get": {

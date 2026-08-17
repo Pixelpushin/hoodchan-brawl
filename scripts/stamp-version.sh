@@ -7,5 +7,5 @@
 # automatically by Vercel's git integration - empty when run outside Vercel
 # (e.g. local dev), which the front end treats as "can't verify, not a
 # Vercel deploy" rather than showing a broken/fake commit link.
-printf '{"commit":"%s","branch":"%s","repo":"Pixelpushin/hoodies-fight"}\n' \
+printf '{"commit":"%s","branch":"%s","repo":"Pixelpushin/pfp-brawl"}\n' \
   "$VERCEL_GIT_COMMIT_SHA" "$VERCEL_GIT_COMMIT_REF" > version.json

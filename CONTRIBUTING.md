@@ -1,14 +1,14 @@
-# Contributing to Hood Vs Hood
+# Contributing to PFP Brawl
 
-This is meant to be built on, not gatekept. No permission needed for anything the [CC0 license](LICENSE) already grants you — but if you'd rather send it upstream instead of maintaining your own fork, PRs are welcome.
+This is meant to be built on, not gatekept. AGPL-3.0 (see [LICENSE](LICENSE)) already grants you the right to fork, remix, and run your own version — the license only asks that a modified version served to others over a network stays source-available too, not that you send anything back here. PRs are still very welcome if you'd rather contribute upstream.
 
 ## Getting set up
 
 No build step, no package manager, no dependencies to install.
 
 ```bash
-git clone https://github.com/Pixelpushin/hoodies-fight.git
-cd hoodies-fight
+git clone https://github.com/Pixelpushin/pfp-brawl.git
+cd pfp-brawl
 python3 -m http.server 8420
 ```
 
@@ -16,9 +16,11 @@ Open `http://localhost:8420`. Edit a file, refresh the tab - that's the whole lo
 
 ## What's useful to work on
 
+- A new collection adapter (see [ADAPTERS.md](ADAPTERS.md)) - this is the single most useful kind of PR, and the whole point of this fork existing separately from hoodies-fight
 - New moves, archetypes, or rebalancing existing ones
 - Better/replacement sprite animations (see `src/body.js` for how sheets and anchors are wired up)
 - AI opponent improvements (`src/ai.js`)
+- Generalizing the match-record API (`api/`) so it's namespaced per-adapter instead of hardcoded to OnChainHoodies - see the README's "Known limitation" note
 - Bug fixes - if something looks wrong in a fight, it probably is
 - Accessibility, mobile/touch controls, remappable keys
 
@@ -29,6 +31,7 @@ Please don't open a PR for wallet-write functionality, wagering, or anything tha
 - Plain ES modules, no build tooling, no npm dependencies - keep it that way
 - No comments unless the *why* is genuinely non-obvious (a subtle invariant, a workaround for a specific bug) - well-named code should speak for itself
 - Match the existing style in whichever file you're touching rather than introducing a new pattern
+- Collection-specific logic belongs in `src/adapters/`, never in `src/main.js`/`src/fighter.js`/`src/game.js` directly - see ADAPTERS.md
 
 ## Sprite sheets and assets
 
@@ -45,4 +48,4 @@ Open an issue with what you did, what you expected, and what actually happened. 
 
 ## Credit
 
-CC0 means you never have to, but a mention in your own README/credits if you build on this is genuinely appreciated.
+Not legally required (see License), but a mention in your own README/credits if you build on this is genuinely appreciated.

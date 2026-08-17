@@ -112,11 +112,14 @@ const PASSIVE_REGEN_PER_FRAME = 0.03; // ~1.8/sec at 60fps
 const POWER_GAIN = { punch: 10, kick: 12, slide: 6, uppercut: 16, special: 0 };
 const BLOCK_POWER_GAIN = 8;
 
-// One mechanical trait per Hood archetype - matches their own "Builders,
-// Collectors, Flippers and HODLers" framing directly rather than inventing
-// something disconnected from the actual collection identity. Exported so
-// the character-select tooltip (main.js) can read the real numbers instead
-// of hardcoding a second copy that could drift out of sync.
+// The engine's 4 fixed archetype slots - every adapter (see
+// src/adapters/index.js) must map its own collection's traits onto exactly
+// these 4 names via archetypeKey. Originally named after OnChainHoodies'
+// own "Builders, Collectors, Flippers and HODLers" framing, which the
+// engine keeps using as the fixed slot names regardless of which
+// collection is actually plugged in. Exported so the character-select
+// tooltip (main.js) can read the real numbers instead of hardcoding a
+// second copy that could drift out of sync.
 export const ARCHETYPES = {
   Builder: { damageMult: 1.25, speedMult: 1, healthMult: 1, blockMult: 1 },
   Flipper: { damageMult: 1, speedMult: 1.3, healthMult: 1, blockMult: 1 },
@@ -133,7 +136,7 @@ export class Fighter {
     this.headImg.crossOrigin = "anonymous";
     this.headImg.src = data.imageUrl;
 
-    this.archetype = ARCHETYPES[data.hoodieType] ?? DEFAULT_ARCHETYPE;
+    this.archetype = ARCHETYPES[data.archetypeKey] ?? DEFAULT_ARCHETYPE;
     this.maxHealth = Math.round(
       MAX_HEALTH *
         this.archetype.healthMult *
@@ -314,7 +317,7 @@ export class Fighter {
       // specialHigh/specialLow) instead of the shared ranged-cast pose -
       // see checkBuilderSpecialHit/checkHodlerSpecialHit in game.js for
       // where their actual hit window is checked.
-      const type = this.data.hoodieType;
+      const type = this.data.archetypeKey;
       this.setState(type === "Builder" ? "specialHigh" : type === "Hodler" ? "specialLow" : "special");
       this.lastEvent = "special-start";
       return;
@@ -437,7 +440,7 @@ export class Fighter {
     // blocks whatever the opponent throws at it the same as a real block,
     // matching every other archetype's special still costing the same power
     // and lockout window for the privilege.
-    const isHolding = this.data.hoodieType === "Hodler" && this.state === "specialLow";
+    const isHolding = this.data.archetypeKey === "Hodler" && this.state === "specialLow";
     // Specials and slides both blow straight through a raised guard - full
     // damage even if the defender was holding block when it landed. A slide
     // is meant to be dodged by jumping over it, not blocked; block doing

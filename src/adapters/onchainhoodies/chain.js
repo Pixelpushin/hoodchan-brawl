@@ -100,7 +100,7 @@ async function rpcCall(method, params) {
 const OWNERSHIP_CHECK_CONCURRENCY = 15;
 const MAX_CANDIDATES = 300;
 
-export async function fetchWalletHoodiesOnChain(address) {
+export async function fetchWalletTokenIdsOnChain(address) {
   const logs = await rpcCall("eth_getLogs", [
     {
       address: CONTRACT,
@@ -149,7 +149,7 @@ function parseTokenURI(uri) {
 // drop-in: rarity "tier" (Common/Rare/etc) is something their own indexer
 // computes across the whole collection, not data any single token's
 // on-chain metadata can contain - that field comes back undefined here,
-// and loadFighterData's rareTraitCount will land on 0 rather than guess.
+// and rareTraitCount will land on 0 rather than guess.
 // Field names below follow the standard OpenSea metadata schema
 // (name/image/attributes) since that's what fully-on-chain generative
 // contracts (this one's an EIP-1167 clone of Mintbay's generative
