@@ -102,6 +102,14 @@ Requires these environment variables (Vercel project settings, not committed any
 | `X_CLIENT_ID` / `X_CLIENT_SECRET` | console.x.com → app → Keys & Tokens → OAuth 2.0 Keys |
 | `X_AUTH_REDIRECT_URI` | This deployment's own `/api/x-auth/callback` URL - must exactly match a callback URL registered in that same X app's User authentication settings |
 
+### IPFS proxy
+
+`api/ipfs.js` is a general-purpose server-side IPFS proxy (see [ADAPTERS.md](https://github.com/Pixelpushin/pfp-brawl/blob/main/ADAPTERS.md)'s "If your collection's art lives on IPFS" section for the full why/how) - HOODCHAN's art lives on IPFS, so this deployment needs it. Works with zero configuration; this deployment also sets two optional variables that make it meaningfully faster and more reliable by trying a paid dedicated gateway before the free public ones:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `PINATA_GATEWAY_DOMAIN` / `PINATA_GATEWAY_TOKEN` | pinata.cloud → Gateways → dedicated gateway's domain + a Gateway Access Token |
+
 ## License
 
 The **code** in this repo is [AGPL-3.0](LICENSE), not the CC0/public-domain license hoodies-fight uses - a deliberate choice for this fork specifically. AGPL means if you run a modified version of this game as a network service (host it for others to play), you have to make your modified source available too - it closes the "clone it, reskin it, host a competitor, never give anything back" loophole that a plain permissive license leaves open for a web app like this. You can still fork it, remix it, and run it privately with no obligations; the copyleft only kicks in once you're serving a modified version to others over a network.
