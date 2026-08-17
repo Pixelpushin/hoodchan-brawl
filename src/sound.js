@@ -6,7 +6,12 @@
 // docs/SITE-INTEGRITY-RESEARCH.md for why that pipeline exists at all).
 // Missing/failed clips degrade to silence, not a crash - see
 // initSound/playSound below.
-const AUDIO_BASE = "https://bjnsuc8wmkpgnt3k.public.blob.vercel-storage.com";
+//
+// This is pfp-brawl's own Blob store (separate from hoodies-fight's), so
+// forks of this repo hotlink this project's copy rather than hoodies-fight's
+// - same underlying paid Splice/Suno files, just not sharing that store's
+// bandwidth.
+const AUDIO_BASE = "https://lmw5corptayu7cn0.public.blob.vercel-storage.com";
 
 const CLIPS = {
   punch: `${AUDIO_BASE}/punch.mp3`,
