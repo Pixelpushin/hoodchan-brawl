@@ -1,7 +1,6 @@
 const { redisCommand } = require("./_lib/redis");
+const { statsKeys, recentMatchesKey, MAX_TOKEN_ID, isValidAdapterKey, LEGACY_ADAPTER_KEY } = require("./_lib/stats-keys");
 
-// Matches OnChainHoodies' own token ID range (0-5999, see their openapi.json).
-const MAX_TOKEN_ID = 5999;
 // Recent-match feed is a rolling window, not a full archive - old entries
 // fall off the end via LTRIM rather than growing the list forever.
 const RECENT_MATCHES_CAP = 200;
@@ -23,10 +22,18 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { tokenId, opponentTokenId, result } = req.body || {};
+  const { tokenId, opponentTokenId, result, adapter } = req.body || {};
   const id = Number(tokenId);
   const oppId = opponentTokenId === undefined || opponentTokenId === null ? null : Number(opponentTokenId);
+  // Defaults to the legacy adapter rather than rejecting the request - an
+  // older/unmodified client build (or a fork that hasn't picked up this
+  // field yet) should still record stats somewhere sane instead of 400ing.
+  const adapterKey = adapter === undefined ? LEGACY_ADAPTER_KEY : adapter;
 
+  if (!isValidAdapterKey(adapterKey)) {
+    res.status(400).json({ error: "adapter must match /^[a-z0-9-]{1,64}$/" });
+    return;
+  }
   if (!Number.isInteger(id) || id < 0 || id > MAX_TOKEN_ID) {
     res.status(400).json({ error: `tokenId must be an integer 0-${MAX_TOKEN_ID}` });
     return;
@@ -41,16 +48,18 @@ module.exports = async (req, res) => {
   }
 
   const field = result === "win" ? "wins" : "losses";
+  const keys = statsKeys(adapterKey, id);
+  const recentKey = recentMatchesKey(adapterKey);
   try {
     const [count] = await Promise.all([
-      redisCommand("incr", `hoodie:${id}:${field}`),
+      redisCommand("incr", keys[field]),
       redisCommand(
         "lpush",
-        "matches:recent",
+        recentKey,
         JSON.stringify({ tokenId: id, opponentTokenId: oppId, result, ts: Date.now() }),
       ),
     ]);
-    await redisCommand("ltrim", "matches:recent", "0", String(RECENT_MATCHES_CAP - 1));
+    await redisCommand("ltrim", recentKey, "0", String(RECENT_MATCHES_CAP - 1));
     res.status(200).json({ ok: true, tokenId: id, [field]: count });
   } catch (err) {
     console.error("[match-result]", err);
