@@ -23,7 +23,76 @@ const STICK_DEADZONE = 0.35;
 // trigger doesn't need to be floored all the way to register.
 const TRIGGER_THRESHOLD = 0.5;
 
-function isPressed(gp, index) {
+// Only the discrete button-triggered actions are remappable (see
+// getGamepadMap/setGamepadAction below) - movement (left/right/crouch) stays
+// tied to the left stick + D-pad, same as keyboard's WASD-style movement
+// keys are never offered for rebinding either. Jump used to double as
+// stick-up, which read as accidental jumps whenever a player was just
+// tilting the stick to move/crouch - it's its own dedicated button now,
+// same as every other action.
+export const REMAPPABLE_ACTIONS = ["jump", "uppercut", "block", "punch", "kick", "slide", "special"];
+
+const DEFAULT_GAMEPAD_MAP = {
+  jump: 6, // LT
+  uppercut: 0, // A / Cross
+  block: 1, // B / Circle
+  punch: 2, // X / Square
+  kick: 3, // Y / Triangle
+  slide: 4, // LB / L1
+  special: 5, // RB / R1
+};
+
+// RT (button 7) always works as an alternate special trigger regardless of
+// the configured map - not offered as its own remappable action (special
+// already has one), just a convenience second input since RB/RT are
+// naturally paired on every pad.
+const SPECIAL_ALT_BUTTON = 7;
+
+const STORAGE_KEY = "pfpbrawl-gamepad-map";
+
+// W3C Standard Gamepad button-index names, for the controls-panel display
+// and the remap UI's "press a button" prompt - covers every index a real
+// standard-mapped pad reports (face buttons, bumpers/triggers, stick
+// clicks, D-pad, start/select). Anything outside this list (a pad with more
+// buttons than the standard 17) just shows its raw index instead of a name.
+const BUTTON_NAMES = [
+  "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Select", "Start",
+  "L Stick Click", "R Stick Click", "D-Up", "D-Down", "D-Left", "D-Right", "Home",
+];
+
+export function buttonName(index) {
+  return BUTTON_NAMES[index] ?? `Button ${index}`;
+}
+
+function loadGamepadMap() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+    return { ...DEFAULT_GAMEPAD_MAP, ...saved };
+  } catch {
+    return { ...DEFAULT_GAMEPAD_MAP };
+  }
+}
+
+let gamepadMap = loadGamepadMap();
+
+export function getGamepadMap() {
+  return gamepadMap;
+}
+
+export function setGamepadAction(action, buttonIndex) {
+  gamepadMap = { ...gamepadMap, [action]: buttonIndex };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(gamepadMap));
+}
+
+export function resetGamepadMap() {
+  gamepadMap = { ...DEFAULT_GAMEPAD_MAP };
+  localStorage.removeItem(STORAGE_KEY);
+}
+
+// Exported (not just used internally) so gamepad-nav.js's menu/UI
+// navigation can read raw button state the same way buildGamepadInput does,
+// instead of re-implementing the same trigger-analog-value handling twice.
+export function isPressed(gp, index) {
   const b = gp.buttons[index];
   if (!b) return false;
   return typeof b === "object" ? b.pressed || b.value > TRIGGER_THRESHOLD : b > TRIGGER_THRESHOLD;
@@ -78,25 +147,26 @@ export function findGamepad(excludeIndex = -1) {
   return null;
 }
 
-// A=uppercut, B=block, X=punch, Y=kick, LB=slide, RB/RT=special, left
-// stick/D-pad=movement+crouch/jump. No "up" action exists in this game
-// outside jump (no vertical walk), so stick-up/D-pad-up maps straight to
-// jump instead of needing its own face button.
+// Movement/crouch stay on the left stick + D-pad (not remappable, see
+// REMAPPABLE_ACTIONS above); every other action reads from the current
+// gamepadMap so a player's rebinds apply immediately without needing a
+// page reload.
 export function buildGamepadInput(gp) {
   const input = emptyInput();
+  const map = gamepadMap;
   const stickX = gp.axes[0] ?? 0;
   const stickY = gp.axes[1] ?? 0;
 
   input.left = stickX < -STICK_DEADZONE || isPressed(gp, 14);
   input.right = stickX > STICK_DEADZONE || isPressed(gp, 15);
   input.crouch = stickY > STICK_DEADZONE || isPressed(gp, 13);
-  input.jump = stickY < -STICK_DEADZONE || isPressed(gp, 12);
-  input.uppercut = isPressed(gp, 0);
-  input.block = isPressed(gp, 1);
-  input.punch = isPressed(gp, 2);
-  input.kick = isPressed(gp, 3);
-  input.slide = isPressed(gp, 4);
-  input.special = isPressed(gp, 5) || isPressed(gp, 7);
+  input.jump = isPressed(gp, map.jump);
+  input.uppercut = isPressed(gp, map.uppercut);
+  input.block = isPressed(gp, map.block);
+  input.punch = isPressed(gp, map.punch);
+  input.kick = isPressed(gp, map.kick);
+  input.slide = isPressed(gp, map.slide);
+  input.special = isPressed(gp, map.special) || isPressed(gp, SPECIAL_ALT_BUTTON);
 
   return input;
 }
@@ -143,4 +213,53 @@ export function initGamepadDebugOverlay() {
     requestAnimationFrame(tick);
   }
   tick();
+}
+
+// Used by the remap UI (src/gamepad-nav.js) - resolves to a Promise for the
+// index of the next button pressed on any connected pad, or null if the
+// player waits out the timeout without pressing anything (so a remap
+// prompt can't get stuck open forever). Polls via requestAnimationFrame
+// rather than a gamepadconnected-style event, since there's no
+// "buttondown" event in this API at all - per-frame snapshots are the only
+// way to detect a press.
+export function waitForButtonPress(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+    // Buttons already held down when the prompt opens shouldn't immediately
+    // resolve it - a player holding a bumper while navigating into the
+    // remap screen would otherwise instantly "press" whatever they were
+    // already holding. Require a release-then-press instead.
+    const alreadyHeld = new Set();
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of pads) {
+      if (!gp) continue;
+      gp.buttons.forEach((_, i) => {
+        if (isPressed(gp, i)) alreadyHeld.add(`${gp.index}:${i}`);
+      });
+    }
+
+    function tick() {
+      if (performance.now() - startedAt > timeoutMs) {
+        resolve(null);
+        return;
+      }
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (const gp of pads) {
+        if (!gp) continue;
+        for (let i = 0; i < gp.buttons.length; i++) {
+          const key = `${gp.index}:${i}`;
+          if (isPressed(gp, i)) {
+            if (!alreadyHeld.has(key)) {
+              resolve(i);
+              return;
+            }
+          } else {
+            alreadyHeld.delete(key);
+          }
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
 }
