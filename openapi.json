@@ -2,25 +2,31 @@
   "openapi": "3.1.0",
   "info": {
     "title": "PFP Brawl API",
-    "version": "1.0.0",
-    "description": "Ambient match-record data for PFP Brawl, a generalized fighting game engine (see ADAPTERS.md) currently running its default OnChainHoodies (https://onchainhoodies.xyz) adapter. Tracks how many times each token ID has fought and won/lost in-game - paths/limits below are still specific to that default adapter (see README's 'Known limitation'). Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/pfp-brawl. Not deployed yet - no `servers` entry until a real deployment exists (see README's Deploying section)."
+    "version": "1.1.0",
+    "description": "Ambient match-record data for PFP Brawl, a generalized fighting game engine (see ADAPTERS.md). Tracks how many times each token ID has fought and won/lost in-game, namespaced per adapter via the `adapter` param (each adapter's own `config.key` from src/adapters/*/index.js) so two different collections' token #42 never share a record. Omitting `adapter` falls back to `onchainhoodies` for backward compatibility with clients built before this param existed. Unauthenticated by design, same trust model as the rest of the game (no wallet writes, nothing on-chain) - this is a fun social signal, not a verified competitive record. Source: https://github.com/Pixelpushin/pfp-brawl. Not deployed yet - no `servers` entry until a real deployment exists (see README's Deploying section)."
   },
   "paths": {
     "/api/hoodie/{tokenId}/stats": {
       "get": {
         "operationId": "getHoodieStats",
-        "summary": "Get a Hoodie's in-game fight record",
+        "summary": "Get a token's in-game fight record",
         "parameters": [
           {
             "name": "tokenId",
             "in": "path",
             "required": true,
-            "schema": { "type": "integer", "minimum": 0, "maximum": 5999 }
+            "schema": { "type": "integer", "minimum": 0, "maximum": 10000000 }
+          },
+          {
+            "name": "adapter",
+            "in": "query",
+            "description": "Which adapter's namespace to read from (matches that adapter's config.key). Defaults to onchainhoodies.",
+            "schema": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" }
           }
         ],
         "responses": {
           "200": {
-            "description": "Fight record for one Hoodie",
+            "description": "Fight record for one token",
             "content": {
               "application/json": {
                 "schema": {
@@ -35,19 +41,25 @@
               }
             }
           },
-          "400": { "description": "Invalid tokenId" }
+          "400": { "description": "Invalid tokenId or adapter" }
         }
       }
     },
     "/api/matches/recent": {
       "get": {
         "operationId": "getRecentMatches",
-        "summary": "Get the most recent completed matches across all Hoodies",
+        "summary": "Get the most recent completed matches for one adapter's collection",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
             "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+          },
+          {
+            "name": "adapter",
+            "in": "query",
+            "description": "Which adapter's namespace to read from (matches that adapter's config.key). Defaults to onchainhoodies.",
+            "schema": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" }
           }
         ],
         "responses": {
@@ -74,14 +86,15 @@
                 }
               }
             }
-          }
+          },
+          "400": { "description": "Invalid adapter" }
         }
       }
     },
     "/api/match-result": {
       "post": {
         "operationId": "postMatchResult",
-        "summary": "Record the outcome of a completed match for one Hoodie",
+        "summary": "Record the outcome of a completed match for one token",
         "description": "Called by the game client itself when a match ends. Unauthenticated - not designed to resist abuse, treat resulting stats as an ambient/fun signal rather than a verified record.",
         "requestBody": {
           "required": true,
@@ -91,9 +104,14 @@
                 "type": "object",
                 "required": ["tokenId", "result"],
                 "properties": {
-                  "tokenId": { "type": "integer", "minimum": 0, "maximum": 5999 },
-                  "opponentTokenId": { "type": ["integer", "null"], "minimum": 0, "maximum": 5999 },
-                  "result": { "type": "string", "enum": ["win", "loss"] }
+                  "tokenId": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+                  "opponentTokenId": { "type": ["integer", "null"], "minimum": 0, "maximum": 10000000 },
+                  "result": { "type": "string", "enum": ["win", "loss"] },
+                  "adapter": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9-]{1,64}$",
+                    "description": "Which adapter's namespace to write to (matches that adapter's config.key). Defaults to onchainhoodies."
+                  }
                 }
               }
             }

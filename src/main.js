@@ -6,6 +6,7 @@ import { pickRandomArena, drawArena, drawFighter } from "./body.js";
 import { speakTaunt } from "./tts.js";
 import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet } from "./wallet.js";
 import { initBloodCode } from "./blood-code.js";
+import { fetchFighterStats } from "./api.js";
 
 initBloodCode();
 
@@ -404,9 +405,22 @@ async function selectFighter(side, tokenId, preview) {
   }
   panelState[side].selectedId = tokenId;
   const label = side === "p1" ? p1Label : p2Label;
-  const type = preview.archetypeKey ?? "Builder";
-  label.textContent = `${preview.name ?? `#${tokenId}`} - ${type}`;
+  const baseLabel = `${preview.name ?? `#${tokenId}`} - ${preview.archetypeKey ?? "Builder"}`;
+  label.textContent = baseLabel;
   fitSelectScreen();
+
+  // Fire-and-forget alongside fetchFighterData below rather than chained
+  // after it - stats and fighter art are independent, no reason to make one
+  // wait on the other. Guarded on selectedId still matching tokenId in case
+  // the user picks a different card before this resolves.
+  fetchFighterStats(tokenId).then((stats) => {
+    // Only apply if nothing else has touched the label since - a newer
+    // selection (selectedId check) or the fetchFighterData failure below
+    // (textContent check, since that overwrites baseLabel with an error).
+    if (!stats || panelState[side].selectedId !== tokenId || label.textContent !== baseLabel) return;
+    label.textContent = `${baseLabel} · ${stats.wins}W-${stats.losses}L`;
+    fitSelectScreen();
+  });
 
   try {
     const data = await activeAdapter.fetchFighterData(tokenId);
