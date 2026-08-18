@@ -25,7 +25,7 @@ import { createAIController } from "./ai.js";
 import { speakTaunt } from "./tts.js";
 import { isBloodUnlocked } from "./blood-code.js";
 import { reportMatchResult } from "./api.js";
-import { readGamepadInput } from "./gamepad.js";
+import { findGamepad, buildGamepadInput } from "./gamepad.js";
 
 const KEYMAP = {
   p1: {
@@ -187,14 +187,16 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
 
   // OR's keyboard and gamepad together rather than one replacing the other,
   // so a controller plugged in mid-match just works alongside the keyboard
-  // with nothing to switch into. gamepadIndex 0 drives p1, 1 drives p2
-  // (browser-assigned by connection order) - readGamepadInput returns null
-  // when nothing's connected at that index, in which case this is a no-op.
-  function withGamepad(keyboardInput, gamepadIndex) {
-    const gp = readGamepadInput(gamepadIndex);
+  // with nothing to switch into. gp is a real Gamepad object (or null) from
+  // findGamepad() - resolved fresh per-frame in the main loop below rather
+  // than assumed to live at a fixed browser index (verified live: a single
+  // connected pad can land at index 1, not 0, leaving a hardcoded "p1 =
+  // index 0" lookup seeing nothing even though the pad works fine).
+  function withGamepad(keyboardInput, gp) {
     if (!gp) return keyboardInput;
+    const gpInput = buildGamepadInput(gp);
     const merged = {};
-    for (const key in keyboardInput) merged[key] = keyboardInput[key] || gp[key];
+    for (const key in keyboardInput) merged[key] = keyboardInput[key] || gpInput[key];
     return merged;
   }
 
@@ -763,8 +765,15 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
 
     frame++;
 
-    p1.update(withGamepad(readInput(KEYMAP.p1), 0));
-    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), 1));
+    // Resolved fresh every frame (not cached) so a controller plugged in or
+    // unplugged mid-match takes effect immediately, and p1's gamepad is
+    // whichever one the browser actually reports first - not assumed to be
+    // index 0 (see withGamepad's comment above for why that assumption
+    // broke in practice).
+    const p1Gamepad = findGamepad();
+    const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
+    p1.update(withGamepad(readInput(KEYMAP.p1), p1Gamepad));
+    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), p2Gamepad));
     // The dummy tops back up to full once it's recovered from the last
     // combo (back to idle) rather than sitting there half-dead or at 0 -
     // real hit feedback lands every time (health bar actually drops during
