@@ -6,10 +6,16 @@
 // (Xbox, PlayStation, most third-party USB pads) reports as once the
 // browser recognizes it - no per-controller-brand special-casing needed.
 //
-// Purely additive to keyboard input (see mergeInput in game.js) - a
+// Purely additive to keyboard input (see withGamepad in game.js) - a
 // controller plugged in mid-match just starts working alongside the
-// keyboard immediately, nothing to configure or switch into. Gamepad index
-// 0 drives p1, index 1 drives p2 (browser-assigned by connection order).
+// keyboard immediately, nothing to configure or switch into.
+//
+// Does NOT assume a single connected pad lands at browser index 0 - verified
+// live that a lone controller can show up at index 1 (likely a leftover
+// phantom/virtual entry at index 0 from the OS or another app), which with a
+// naive "index 0 = p1" mapping meant the pad was live and correctly read,
+// just never assigned to either fighter. findGamepad() scans for whichever
+// index actually has a pad instead of assuming one.
 
 const STICK_DEADZONE = 0.35;
 // A trigger (buttons[6]/[7] on most pads) reports 0-1 as an analog value,
@@ -53,21 +59,30 @@ function logGamepadOnce(gp) {
   }
 }
 
+// Returns whichever connected Gamepad object comes first in browser index
+// order, skipping excludeIndex (already claimed by the other player, in a
+// real 2-controller local match). Not gating on gp.connected - it's
+// supposed to flip false on disconnect, but some browser/OS/driver combos
+// leave it undefined rather than true even while the pad is live and
+// reporting real button data. A missing entry (nothing at that index at
+// all) is the only case that actually means "no pad here."
+export function findGamepad(excludeIndex = -1) {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (let i = 0; i < pads.length; i++) {
+    const gp = pads[i];
+    if (gp && i !== excludeIndex) {
+      logGamepadOnce(gp);
+      return gp;
+    }
+  }
+  return null;
+}
+
 // A=uppercut, B=block, X=punch, Y=kick, LB=slide, RB/RT=special, left
 // stick/D-pad=movement+crouch/jump. No "up" action exists in this game
 // outside jump (no vertical walk), so stick-up/D-pad-up maps straight to
 // jump instead of needing its own face button.
-export function readGamepadInput(index) {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  const gp = pads[index];
-  // Not gating on gp.connected - it's supposed to flip false on disconnect,
-  // but some browser/OS/driver combos leave it undefined rather than true
-  // even while the pad is live and reporting real button data. A missing
-  // gp (nothing at this index at all) is the only case that actually means
-  // "no pad here."
-  if (!gp) return null;
-  logGamepadOnce(gp);
-
+export function buildGamepadInput(gp) {
   const input = emptyInput();
   const stickX = gp.axes[0] ?? 0;
   const stickY = gp.axes[1] ?? 0;
@@ -98,12 +113,14 @@ window.addEventListener("gamepaddisconnected", (e) => {
   console.log(`[gamepad] disconnected index ${e.gamepad.index}: "${e.gamepad.id}"`);
 });
 
-// Opt-in live readout (add ?gamepaddebug to the URL) showing every raw
-// button/axis value for whatever's connected at index 0/1, updated every
-// frame - the fastest way to tell "browser sees nothing at all" apart from
-// "sees it, but button 2 doesn't mean punch on this pad" apart from "it's
-// working, the player just hasn't pressed anything yet." Not shown by
-// default so it doesn't clutter the game for everyone.
+// Opt-in live readout (add ?gamepaddebug to the URL) showing what's
+// actually driving each fighter right now - using the same findGamepad()
+// scan the real game loop uses, not a raw index 0/1 dump, so this can't
+// show "nothing at index 0" while a pad that IS driving p1 sits at some
+// other index. Updated every frame - the fastest way to tell "browser sees
+// nothing at all" apart from "sees it, but button 2 doesn't mean punch on
+// this pad" apart from "it's working, the player just hasn't pressed
+// anything yet." Not shown by default so it doesn't clutter the game.
 export function initGamepadDebugOverlay() {
   if (!new URLSearchParams(location.search).has("gamepaddebug")) return;
   const el = document.createElement("pre");
@@ -116,12 +133,13 @@ export function initGamepadDebugOverlay() {
     if (!gp) return "(none)";
     const pressed = gp.buttons.map((b, i) => (isPressed(gp, i) ? i : null)).filter((i) => i !== null);
     const axes = gp.axes.map((a) => a.toFixed(2)).join(", ");
-    return `"${gp.id}"\n  mapping: ${gp.mapping || "(none)"}\n  buttons pressed: [${pressed.join(", ")}]\n  axes: [${axes}]`;
+    return `index ${gp.index}: "${gp.id}"\n  mapping: ${gp.mapping || "(none)"}\n  buttons pressed: [${pressed.join(", ")}]\n  axes: [${axes}]`;
   }
 
   function tick() {
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    el.textContent = `GAMEPAD DEBUG\np1 (index 0): ${describe(pads[0])}\np2 (index 1): ${describe(pads[1])}`;
+    const p1Gamepad = findGamepad();
+    const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
+    el.textContent = `GAMEPAD DEBUG\np1: ${describe(p1Gamepad)}\np2: ${describe(p2Gamepad)}`;
     requestAnimationFrame(tick);
   }
   tick();
