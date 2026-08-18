@@ -115,6 +115,24 @@ export function createAIController(self, opponent) {
 
     if (dist <= ATTACK_RANGE) {
       const roll = Math.random();
+      // Kick and special both whiff clean over a crouching opponent (see
+      // checkHit's crouch/kick check and updateProjectiles' crouch dodge) -
+      // throwing them anyway just burns power for nothing and lets a
+      // turtling opponent poke for free with punch, which connects through
+      // crouch regardless. Was the actual mechanism behind "hold crouch,
+      // spam punch, win every time" - the AI kept feeding a defense it had
+      // no way to beat. Slide isn't dodged by crouch (only a jump answers
+      // it, per the slide-react check above), so it's the real punish here.
+      if (opponent.state === "crouch") {
+        if (self.power >= SLIDE.cost && roll < 0.35) {
+          input.slide = true;
+        } else if (roll < 0.9) {
+          input.punch = true;
+        } else {
+          input.block = true;
+        }
+        return;
+      }
       if (self.power >= 50 && roll < 0.2) {
         input.special = true;
       } else if (self.power >= 20 && roll < 0.45) {
