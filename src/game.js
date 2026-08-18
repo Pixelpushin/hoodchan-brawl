@@ -25,6 +25,7 @@ import { createAIController } from "./ai.js";
 import { speakTaunt } from "./tts.js";
 import { isBloodUnlocked } from "./blood-code.js";
 import { reportMatchResult } from "./api.js";
+import { readGamepadInput } from "./gamepad.js";
 
 const KEYMAP = {
   p1: {
@@ -182,6 +183,19 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       kick: pressed.has(map.kick),
       special: pressed.has(map.special),
     };
+  }
+
+  // OR's keyboard and gamepad together rather than one replacing the other,
+  // so a controller plugged in mid-match just works alongside the keyboard
+  // with nothing to switch into. gamepadIndex 0 drives p1, 1 drives p2
+  // (browser-assigned by connection order) - readGamepadInput returns null
+  // when nothing's connected at that index, in which case this is a no-op.
+  function withGamepad(keyboardInput, gamepadIndex) {
+    const gp = readGamepadInput(gamepadIndex);
+    if (!gp) return keyboardInput;
+    const merged = {};
+    for (const key in keyboardInput) merged[key] = keyboardInput[key] || gp[key];
+    return merged;
   }
 
   let timeLeft = timeLimit;
@@ -749,8 +763,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
 
     frame++;
 
-    p1.update(readInput(KEYMAP.p1));
-    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : readInput(KEYMAP.p2));
+    p1.update(withGamepad(readInput(KEYMAP.p1), 0));
+    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), 1));
     // The dummy tops back up to full once it's recovered from the last
     // combo (back to idle) rather than sitting there half-dead or at 0 -
     // real hit feedback lands every time (health bar actually drops during
