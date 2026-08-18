@@ -7,6 +7,9 @@ import { speakTaunt } from "./tts.js";
 import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet } from "./wallet.js";
 import { initBloodCode } from "./blood-code.js";
 import { fetchFighterStats } from "./api.js";
+import { initGamepadDebugOverlay } from "./gamepad.js";
+
+initGamepadDebugOverlay();
 
 initBloodCode();
 
