@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=3" />
 </head>
 <body>
   <h1><img src="assets/branding/logo.png" alt="" id="logo-mark" />HOOD VS HOOD</h1>
@@ -136,56 +136,122 @@
         </div>
       </div>
     </div>
-    <button id="controls-info-btn" aria-label="Controls &amp; tips" title="Controls &amp; tips">?</button>
-    <div id="controls-panel">
-      <h3 class="panel-heading">Controls</h3>
-      <ul class="key-list">
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">A</kbd><kbd class="key-cap">D</kbd></span>
-          <span class="key-label">Move</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap key-cap-wide">Space</kbd></span>
-          <span class="key-label">Jump</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">S</kbd></span>
-          <span class="key-label">Crouch</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">C</kbd></span>
-          <span class="key-label">Block</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">F</kbd></span>
-          <span class="key-label">Punch</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">G</kbd></span>
-          <span class="key-label">Kick</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">R</kbd></span>
-          <span class="key-label">Special</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">W</kbd></span>
-          <span class="key-label">Uppercut</span>
-        </li>
-        <li class="key-row">
-          <span class="key-caps"><kbd class="key-cap">E</kbd></span>
-          <span class="key-label">Slide</span>
-        </li>
-      </ul>
-      <h3 class="panel-heading">Tips</h3>
-      <ul class="tips-list">
-        <li>Punch builds power; kick and special spend it, everything else is free</li>
-        <li>Crouch ducks kicks and high specials (bolt, high kick)</li>
-        <li>Ground attacks (rat rush, sweep kick, slides) can only be jumped</li>
-        <li>Block stops punch/kick but not specials or slides</li>
-        <li>Uppercut punishes a jump-in up close</li>
-        <li>Controllers work too - plug one in and press any button, no setup needed (stick/D-pad to move, A=uppercut, B=block, X=punch, Y=kick, LB=slide, RB/RT=special)</li>
-      </ul>
+  </div>
+
+  <!-- Global (not nested in any one screen) since it's position:fixed and
+       needs to open from the setup/select screens too, not just mid-match -
+       see src/gamepad-nav.js, which is what actually drives Start/Select
+       toggling this open with a controller. -->
+  <button id="controls-info-btn" aria-label="Controls &amp; tips" title="Controls &amp; tips">?</button>
+  <div id="controls-panel">
+    <h3 class="panel-heading">Controls</h3>
+    <ul class="key-list">
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">A</kbd><kbd class="key-cap">D</kbd></span>
+        <span class="key-label">Move</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap key-cap-wide">Space</kbd></span>
+        <span class="key-label">Jump</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">S</kbd></span>
+        <span class="key-label">Crouch</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">C</kbd></span>
+        <span class="key-label">Block</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">F</kbd></span>
+        <span class="key-label">Punch</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">G</kbd></span>
+        <span class="key-label">Kick</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">R</kbd></span>
+        <span class="key-label">Special</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">W</kbd></span>
+        <span class="key-label">Uppercut</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">E</kbd></span>
+        <span class="key-label">Slide</span>
+      </li>
+    </ul>
+    <!-- Populated/kept in sync by src/gamepad-nav.js's renderGamepadMapPanel
+         - the key-cap text for each data-gp-action row reflects whatever
+         the player's actual current binding is (defaults, or their own
+         remap), not a hardcoded label, since Rebind can change it live. -->
+    <h3 class="panel-heading">Controller</h3>
+    <ul class="key-list" id="gamepad-key-list">
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">Stick / D-Pad</kbd></span>
+        <span class="key-label">Move</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="jump"></kbd></span>
+        <span class="key-label">Jump</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">Stick / D-Pad Down</kbd></span>
+        <span class="key-label">Crouch</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="block"></kbd></span>
+        <span class="key-label">Block</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="punch"></kbd></span>
+        <span class="key-label">Punch</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="kick"></kbd></span>
+        <span class="key-label">Kick</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="special"></kbd></span>
+        <span class="key-label">Special</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="uppercut"></kbd></span>
+        <span class="key-label">Uppercut</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap" data-gp-action="slide"></kbd></span>
+        <span class="key-label">Slide</span>
+      </li>
+      <li class="key-row">
+        <span class="key-caps"><kbd class="key-cap">Start / Select</kbd></span>
+        <span class="key-label">Open/close this menu</span>
+      </li>
+    </ul>
+    <button id="gamepad-remap-btn" class="secondary-btn">Remap Controller</button>
+    <h3 class="panel-heading">Tips</h3>
+    <ul class="tips-list">
+      <li>Punch builds power; kick and special spend it, everything else is free</li>
+      <li>Crouch ducks kicks and high specials (bolt, high kick)</li>
+      <li>Ground attacks (rat rush, sweep kick, slides) can only be jumped</li>
+      <li>Block stops punch/kick but not specials or slides</li>
+      <li>Uppercut punishes a jump-in up close</li>
+      <li>Controllers work too - plug one in and press any button, no setup needed. Menus, character select, and match exit/restart are all controller-navigable (D-pad/stick + A to confirm, B to go back).</li>
+    </ul>
+  </div>
+
+  <!-- Hidden by default, toggled open by #gamepad-remap-btn (src/gamepad-nav.js).
+       A separate panel rather than replacing #controls-panel's contents in
+       place, since the underlying key list needs to stay intact to flip
+       back to once remapping is done. -->
+  <div id="gamepad-remap-panel" class="hidden">
+    <h3 class="panel-heading">Remap Controller</h3>
+    <ul class="key-list" id="gamepad-remap-list"></ul>
+    <div id="gamepad-remap-actions">
+      <button id="gamepad-remap-reset" class="secondary-btn">Reset to Defaults</button>
+      <button id="gamepad-remap-done">Done</button>
     </div>
   </div>
 
