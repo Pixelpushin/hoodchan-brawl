@@ -1285,3 +1285,95 @@ canvas {
   animation: pop-in 0.25s ease-out;
   pointer-events: none;
 }
+
+/* Gamepad/keyboard focus ring - src/gamepad-nav.js moves real DOM focus
+   (document.activeElement) between buttons/character-cards/checkboxes
+   rather than tracking its own separate "selected" concept, so this one
+   rule is what makes every screen's controller navigation visible at all.
+   Same gold used by the practice-toggle's own pre-existing focus ring
+   (see .practice-toggle input:focus-visible above) rather than introducing
+   a second focus color. :focus-visible (not :focus) so a mouse click
+   doesn't leave a lingering ring the way keyboard/gamepad nav should. */
+button:focus-visible,
+.character-card:focus-visible,
+a:focus-visible {
+  outline: 2px solid #ffe066;
+  outline-offset: 2px;
+  box-shadow: 0 0 10px #ffe066aa;
+}
+
+.secondary-btn {
+  background: transparent;
+  color: #3ddc3d;
+  border: 2px solid #3ddc3d;
+  box-shadow: 0 0 12px #3ddc3d44;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: transform 0.1s ease-out;
+}
+
+.secondary-btn:hover {
+  transform: scale(1.03);
+}
+
+#gamepad-remap-btn {
+  margin: 4px 0 18px;
+  width: 100%;
+}
+
+/* Same fixed/slide-in treatment as #controls-panel (see that rule above) -
+   a second panel rather than swapping #controls-panel's own contents in
+   place, so the underlying key list is still there intact once remapping
+   is done. Only ever opened from within #controls-panel (see
+   #gamepad-remap-btn's click handler in src/gamepad-nav.js), so it shares
+   the same z-index/positioning family. */
+#gamepad-remap-panel {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 21;
+  width: min(320px, 86vw);
+  background: #0b0b0fee;
+  border-right: 1px solid #3ddc3d44;
+  padding: 64px 22px 22px;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+#gamepad-remap-panel.hidden {
+  display: none;
+}
+
+#gamepad-remap-list .key-row {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+#gamepad-remap-list .rebind-btn {
+  background: transparent;
+  color: #ffe066;
+  border: 1px solid #ffe06699;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+#gamepad-remap-list .rebind-btn.waiting {
+  color: #0b0b0f;
+  background: #ffe066;
+}
+
+#gamepad-remap-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+#gamepad-remap-actions button {
+  flex: 1;
+}

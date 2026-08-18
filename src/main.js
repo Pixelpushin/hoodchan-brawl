@@ -8,8 +8,10 @@ import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet
 import { initBloodCode } from "./blood-code.js";
 import { fetchFighterStats } from "./api.js";
 import { initGamepadDebugOverlay } from "./gamepad.js";
+import { initGamepadNav } from "./gamepad-nav.js";
 
 initGamepadDebugOverlay();
+initGamepadNav();
 
 initBloodCode();
 
@@ -462,6 +464,13 @@ async function renderPanel(side) {
     const card = document.createElement("div");
     card.className = "character-card";
     card.dataset.tokenId = id;
+    // tabindex makes these natively focusable (they're <div>s, not
+    // <button>s) - required for both real Tab-key keyboard nav and the
+    // gamepad menu-nav system (src/gamepad-nav.js), which moves
+    // document.activeElement around and calls .click() on whatever's
+    // focused rather than needing its own per-element-type activation
+    // logic.
+    card.tabIndex = 0;
     if (state.selectedId === id) card.classList.add("selected");
     card.innerHTML = `
       <img src="${preview.previewImageUrl ?? ""}" alt="${type}" />
@@ -469,6 +478,12 @@ async function renderPanel(side) {
       ${info ? `<div class="card-badge">${info.emoji}</div>` : ""}
     `;
     card.addEventListener("click", () => selectFighter(side, id, preview));
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        card.click();
+      }
+    });
     if (info) attachBadgeTooltip(card.querySelector(".card-badge"), archetypeTooltip(type, preview.rareTraitCount ?? 0));
     grid.appendChild(card);
   });
