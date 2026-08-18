@@ -1,12 +1,19 @@
 const { redisCommand } = require("../_lib/redis");
+const { recentMatchesKey, isValidAdapterKey, LEGACY_ADAPTER_KEY } = require("../_lib/stats-keys");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   const limitRaw = Number(req.query.limit);
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 25;
+  const adapterKey = req.query.adapter === undefined ? LEGACY_ADAPTER_KEY : req.query.adapter;
+
+  if (!isValidAdapterKey(adapterKey)) {
+    res.status(400).json({ error: "adapter must match /^[a-z0-9-]{1,64}$/" });
+    return;
+  }
 
   try {
-    const raw = await redisCommand("lrange", "matches:recent", "0", String(limit - 1));
+    const raw = await redisCommand("lrange", recentMatchesKey(adapterKey), "0", String(limit - 1));
     const matches = (raw || [])
       .map((entry) => {
         try {

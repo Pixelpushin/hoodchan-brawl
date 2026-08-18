@@ -78,13 +78,13 @@ ADAPTERS.md                How to plug in a different NFT collection
 
 A lightweight, ambient win/loss record per token ID, plus optional X account linking - full spec at [openapi.json](openapi.json).
 
-- `GET /api/hoodie/{tokenId}/stats` - wins/losses/matches for one token
-- `GET /api/matches/recent?limit=25` - newest completed matches across all tokens
-- `POST /api/match-result` - called by the game client itself when a match ends
+- `GET /api/hoodie/{tokenId}/stats?adapter=<key>` - wins/losses/matches for one token
+- `GET /api/matches/recent?limit=25&adapter=<key>` - newest completed matches for one adapter's collection
+- `POST /api/match-result` - called by the game client itself when a match ends, body includes `adapter`
 
-**Known limitation**: this API's own path/storage (`/api/hoodie/...`, a 5999 token-id cap) is still hardcoded to the OnChainHoodies adapter specifically - it hasn't been generalized alongside the game engine yet. A different active adapter can still play the game fine; its match results just won't have anywhere collection-scoped to land yet. Namespacing this per-adapter (so two different collections' stats don't collide in the same Redis store) is a real next step, not done here.
+Namespaced per adapter (`adapter` matches that adapter's own `config.key` from `src/adapters/*/index.js`) so two different collections' token #42 never share a record. `adapter` is optional on every route and defaults to `onchainhoodies` - that adapter specifically keeps its original unprefixed Redis keys rather than moving to the new `stats:{adapter}:...` scheme, since hoodies-fight's live deployment already has real accumulated win/loss data under those exact keys (see `api/_lib/stats-keys.js`).
 
-Unauthenticated by design, same trust model as everything else here (no wallet writes, nothing on-chain) - treat it as a fun social signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo).
+Unauthenticated by design, same trust model as everything else here (no wallet writes, nothing on-chain) - treat it as a fun social signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo). The active adapter needs `KV_REST_API_URL`/`KV_REST_API_TOKEN` set (Vercel's Upstash-for-Redis integration) for this API to work at all - without it, `reportMatchResult` calls still fire from the client (fire-and-forget, never blocks a match) but just fail silently server-side.
 
 ### X account linking
 
