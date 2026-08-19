@@ -89,6 +89,10 @@ Returns an array of token IDs a wallet address owns. Return `[]` (not an error) 
 
 Returns up to `count` token IDs to populate the "Play Free" random-sample pool. For a large sequential ID range, sample randomly (see `onchainhoodies/index.js`). For a small fixed collection, shuffle/cycle the known list instead (see `template/index.js`) - whichever makes sense for how your collection's IDs actually work.
 
+### `verifyOwnership(tokenId, address)` - optional
+
+Not one of the 4 required exports above - only called by `main.js`'s cosmetic post-match "verified owner" flourish (a client-side flex, not a security check - see that function's own comment for why a purely-client win screen can't be made cheat-proof anyway). Returns a `Promise<boolean>`: does `address` currently own `tokenId`? `main.js` feature-detects with a `typeof` check before calling it, so omitting this entirely is fine for a collection with no on-chain component (the template adapter has no `config.chain` either, which short-circuits the check before it would even matter). See `onchainhoodies/index.js` or `hoodchan/index.js` for a one-line implementation - both just call their own `chain.js`'s existing `readOwnerOf`.
+
 ## If your collection's art lives on IPFS
 
 Skip this whole section if your collection is fully on-chain (like OnChainHoodies) or hosted on a normal HTTP server you control - you don't need any of this, just `fetch()` it directly.

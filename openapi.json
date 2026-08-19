@@ -91,11 +91,104 @@
         }
       }
     },
+    "/api/leaderboard": {
+      "get": {
+        "operationId": "getLeaderboard",
+        "summary": "Get the top fighters by win count for one adapter's collection",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+          },
+          {
+            "name": "adapter",
+            "in": "query",
+            "description": "Which adapter's namespace to read from (matches that adapter's config.key). Defaults to onchainhoodies.",
+            "schema": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ranked fighters, highest win count first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fighters": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tokenId": { "type": "integer" },
+                          "wins": { "type": "integer" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid adapter" }
+        }
+      }
+    },
+    "/api/rivalry/{tokenIdA}/{tokenIdB}": {
+      "get": {
+        "operationId": "getRivalry",
+        "summary": "Get the head-to-head win record between two tokens",
+        "description": "Order of tokenIdA/tokenIdB in the path doesn't matter - both orderings resolve to the same underlying record.",
+        "parameters": [
+          {
+            "name": "tokenIdA",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0, "maximum": 10000000 }
+          },
+          {
+            "name": "tokenIdB",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0, "maximum": 10000000 }
+          },
+          {
+            "name": "adapter",
+            "in": "query",
+            "description": "Which adapter's namespace to read from (matches that adapter's config.key). Defaults to onchainhoodies.",
+            "schema": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Head-to-head win record for this pairing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokenIdA": { "type": "integer" },
+                    "tokenIdB": { "type": "integer" },
+                    "wins": {
+                      "type": "object",
+                      "description": "Win count for this pairing keyed by token ID (as a string)"
+                    },
+                    "matches": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid tokenIdA/tokenIdB or adapter" }
+        }
+      }
+    },
     "/api/match-result": {
       "post": {
         "operationId": "postMatchResult",
         "summary": "Record the outcome of a completed match for one token",
-        "description": "Called by the game client itself when a match ends. Unauthenticated - not designed to resist abuse, treat resulting stats as an ambient/fun signal rather than a verified record.",
+        "description": "Called by the game client itself when a match ends. Unauthenticated - not designed to resist abuse, treat resulting stats as an ambient/fun signal rather than a verified record. When opponentTokenId is present this also updates that pairing's head-to-head record (see /api/rivalry/{tokenIdA}/{tokenIdB}), and a win also updates the adapter's leaderboard (see /api/leaderboard).",
         "requestBody": {
           "required": true,
           "content": {
