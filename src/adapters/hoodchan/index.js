@@ -23,6 +23,7 @@
 //    just not thematically meaningful the way a real trait mapping would be.
 
 import { CHAIN_ID_HEX, RPC_URL, fetchTokenMetadata, fetchWalletTokenIdsOnChain } from "./chain.js";
+import { fetchTokenFromApi, fetchWalletTokenIdsFromApi } from "./hoodchanApi.js";
 import { prepareHeadImage } from "../shared/head-image.js";
 
 export const config = {
@@ -49,18 +50,36 @@ export const config = {
   },
 };
 
+// Offline-only fallback for when hoodchan.org's API is unreachable - a
+// deterministic hash keeps every token's archetype stable run to run, it
+// just isn't thematically meaningful the way the real XP-based mapping is.
 const ARCHETYPE_ORDER = ["Builder", "Flipper", "Hodler", "Collector"];
-
-function archetypeKeyFrom(tokenId) {
+function archetypeKeyFromHash(tokenId) {
   return ARCHETYPE_ORDER[Number(tokenId) % ARCHETYPE_ORDER.length];
 }
 
+// Tries the real h00dchan app first (real archetype from real XP, permanent
+// Blob-CDN image, no data-URI conversion needed) and only falls back to
+// this adapter's own on-chain+IPFS read if that's unreachable - see
+// hoodchanApi.js's header comment for why the API path is both faster and
+// simpler. Both paths return the same shape so callers never need to know
+// which one actually served the request.
+async function resolveToken(tokenId) {
+  try {
+    const token = await fetchTokenFromApi(tokenId);
+    return { ...token, archetypeKey: token.archetypeKey ?? archetypeKeyFromHash(tokenId) };
+  } catch {
+    const token = await fetchTokenMetadata(tokenId);
+    return { ...token, archetypeKey: archetypeKeyFromHash(tokenId) };
+  }
+}
+
 export async function fetchTokenPreview(tokenId) {
-  const token = await fetchTokenMetadata(tokenId);
+  const token = await resolveToken(tokenId);
   return {
     tokenId,
     name: token.name,
-    archetypeKey: archetypeKeyFrom(tokenId),
+    archetypeKey: token.archetypeKey,
     // No rarity-tier data exposed in HOODCHAN's metadata (unlike
     // OnChainHoodies' indexer-computed tiers) - honest 0 rather than a
     // guess. A collection with real rarity data would compute this from it,
@@ -71,25 +90,29 @@ export async function fetchTokenPreview(tokenId) {
 }
 
 export async function fetchFighterData(tokenId) {
-  const token = await fetchTokenMetadata(tokenId);
+  const token = await resolveToken(tokenId);
   const imageUrl = await prepareHeadImage(token.image, config.headStyle);
   return {
     tokenId,
     name: token.name,
-    archetypeKey: archetypeKeyFrom(tokenId),
+    archetypeKey: token.archetypeKey,
     rareTraitCount: 0,
     imageUrl,
     avatarUrl: token.image,
-    // h00dchan's own board/quote system doesn't exist yet at the contract
-    // level (see the source app's README - "No AI, no posting, no database
-    // yet") - nothing to pull a taunt from.
+    // h00dchan now has a real board with real posts (it didn't when this
+    // adapter was first written) - pulling a real quote as the taunt/
+    // talkHistory source is a natural next step, not done yet here.
     taunt: null,
     talkHistory: [],
   };
 }
 
 export async function fetchWalletTokenIds(address) {
-  return fetchWalletTokenIdsOnChain(address);
+  try {
+    return await fetchWalletTokenIdsFromApi(address);
+  } catch {
+    return fetchWalletTokenIdsOnChain(address);
+  }
 }
 
 // Sequential 1-1200 range (totalSupply at mint - a couple of tokens have
