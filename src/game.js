@@ -26,6 +26,9 @@ import {
   MAX_POWER,
   SLIDE,
   UPPERCUT,
+  AIR_ATTACK,
+  AIR_SPECIAL,
+  AIR_KICK_POSES,
   BUILDER_SPECIAL,
   HODLER_SPECIAL,
   ARENA_MIN_X,
@@ -143,6 +146,39 @@ const RAT_RUSH_SPEED = 10;
 const RAT_RUSH_HIT_RADIUS = 45;
 const RAT_RUSH_SPRITE_TICKS_PER_FRAME = 3;
 
+// --- Homing aerial special (fighter.js's AIR_SPECIAL) -----------------------
+// Same projectiles array/updateProjectiles loop/drawSurgeBlast art the bolt
+// above already uses (see spawnHomingProjectile/the "homing" branch inside
+// updateProjectiles below) - only the STEERING is new. A simple proportional
+// (P-)controller, not real aim-assist: every real tick, the projectile's own
+// velocity is nudged a fraction (HOMING_TURN_RATE) of the way toward "dead
+// straight at the target's x THIS INSTANT", recomputed fresh every tick
+// rather than aimed once at cast time. Since the target's own x is itself
+// still moving (walking, or drifting through a juggle), the bolt is always
+// chasing a moving point it hasn't yet caught up to - that's what makes the
+// flight path visibly curve rather than snap-lock onto a straight line or
+// teleport onto the target, and it's the whole "how do you combo... ranged
+// attacks from the air auto aimed at opponent" ask made real.
+const HOMING_SPEED = 8;
+// Fraction of the current velocity-vs-target-heading gap corrected per real
+// tick. 0.16 chosen empirically (verified live - see this phase's own
+// verification pass): high enough that a launch aimed roughly at the
+// opponent visibly bends onto them within a few frames instead of missing
+// wide, low enough that the curve is actually visible frame to frame rather
+// than reading as an instant snap the moment it's cast.
+const HOMING_TURN_RATE = 0.16;
+// Matches PROJECTILE_HIT_RADIUS (the straight bolt's own hit window) - same
+// target body width, no reason for the homing variant's contact tolerance to
+// differ.
+const HOMING_HIT_RADIUS = 34;
+// Backstop, not a real gameplay lever - a projectile that's still tracking
+// (never closed the gap, e.g. the target stayed pinned at the exact opposite
+// wall for its whole flight) fizzles out here rather than homing forever.
+// 90 frames (1.5s) is generous relative to how fast HOMING_SPEED actually
+// closes real arena distances - this essentially never fires in practice,
+// it's a guarantee, not a tuning knob.
+const HOMING_MAX_LIFETIME_FRAMES = 90;
+
 // --- Bolt/rat-rush multi-hit flurry ---------------------------------------
 // Both of these are ranged - once one connects, the defender is genuinely
 // locked in real hitstun (Fighter.update() early-returns on "hitstun", no
@@ -189,6 +225,24 @@ const SLIDE_HIT_RADIUS = 70;
 // ranges (fighter.js) are all sized to clear this with margin.
 const MIN_FIGHTER_GAP = 68;
 
+// A fighter counts as "airborne" for every one of the grounded-attack
+// exclusion checks below (checkHit/updateSlide/checkBuilderSpecialHit/
+// checkHodlerSpecialHit/updateProjectiles' own dodge logic/resolveCollision)
+// the moment they're off the ground for ANY reason - a voluntary jump, an
+// uppercut-launched juggle, or (new) mid-way through throwing airKick/
+// flyingKick, fighter.js's aerial-attack poses: airborneT (fighter.js) keeps
+// counting through that whole flight without resetting specifically so a
+// fighter mid-air-attack still reads as genuinely airborne everywhere else
+// in the engine, same as plain "jump" already did, rather than becoming
+// briefly "grounded" (and hittable by a sweep, dodging nothing, solid-body
+// blocked) for the couple frames their own swing is out. Factored out once
+// here instead of repeating the same four-state OR chain at every call site
+// below - same reasoning KICK_POSES/PUNCH_POSES already collapse several
+// pose variants into one classification for.
+function isAirborne(state) {
+  return state === "jump" || state === "juggled" || state === "airKick" || state === "flyingKick";
+}
+
 // Pushes both fighters apart symmetrically whenever they'd overlap, instead
 // of each fighter unilaterally checking only its own (static) facing - that
 // old approach didn't account for the opponent's own movement and let them
@@ -206,9 +260,17 @@ const MIN_FIGHTER_GAP = 68;
 // still solid-blocked at MIN_FIGHTER_GAP the whole time), so there was
 // never actually a way to end up on the other side of the opponent. This is
 // what makes jumping over someone - or sliding past one who jumped over
-// your slide - actually work.
+// your slide - actually work. "juggled" (fighter.js's new airborne-launcher
+// state) is included in the same skip for the same reason - a juggled
+// fighter is every bit as airborne as a jumping one, and this is also what
+// lets the ATTACKER actually jump in close to (or past) a still-airborne
+// juggled opponent to follow up, instead of the solid-body push shoving
+// them back out to MIN_FIGHTER_GAP the instant they try. "airKick"/
+// "flyingKick" fold into the same isAirborne() check now for the same
+// reason - the attacker throwing an air attack while closing in on a
+// juggled opponent is exactly the case this exists to not shove apart.
 function resolveCollision(a, b) {
-  if (a.state === "jump" || b.state === "jump") return;
+  if (isAirborne(a.state) || isAirborne(b.state)) return;
   const dx = b.x - a.x;
   if (Math.abs(dx) >= MIN_FIGHTER_GAP) return;
   const dir = dx >= 0 ? 1 : -1;
@@ -376,14 +438,21 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // kick-height hit, same as the original kick sheet, even though its own
     // state string is "highKick" now that punch/kick attacks cycle through
     // several pose states (see PUNCH_POSES/KICK_POSES in fighter.js).
+    // AIR_KICK_POSES checked ahead of the uppercut case below - a landed
+    // airKick/flyingKick connects well above even uppercut's own already-
+    // elevated contact point, since the attacker is genuinely up in the air
+    // throwing it (the whole point of the move), not just mid-swing at
+    // standing height the way a grounded anti-air is.
     const contactHeight =
       KICK_POSES.includes(attacker.state) || attacker.state === "slide"
         ? GROUND_Y - 20
         : attacker.state === "special"
           ? PROJECTILE_Y
-          : attacker.state === "uppercut"
-            ? GROUND_Y - 90
-            : GROUND_Y - 50;
+          : AIR_KICK_POSES.includes(attacker.state)
+            ? GROUND_Y - 110
+            : attacker.state === "uppercut"
+              ? GROUND_Y - 90
+              : GROUND_Y - 50;
     const contactX = defenderCenterX + towardAttacker * (gapX * 0.4);
 
     // Always-on melee impact flash, independent of the blood setting below -
@@ -589,7 +658,12 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // hit) matches how every fighting game's own combo counter works.
   function drawComboCounter(fighter) {
     if (fighter.comboCount < 2) return;
-    if (fighter.state !== "hitstun" && fighter.state !== "knockback") return;
+    // "juggled" added alongside hitstun/knockback - a launched defender is
+    // exactly as much "still mid-combo" as a grounded one (see
+    // takeDamage's own wasChaining check in fighter.js, which now agrees),
+    // so the readout should stay up the whole time they're airborne instead
+    // of blanking out the moment uppercut launches them.
+    if (fighter.state !== "hitstun" && fighter.state !== "knockback" && fighter.state !== "juggled") return;
     const centerX = fighter.x + BODY_CENTER_OFFSET;
     ctx.save();
     ctx.font = "bold 20px sans-serif";
@@ -608,7 +682,15 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   function checkHit(attacker, defender) {
     const box = attacker.attackHitbox();
     if (!box) return;
-    if (defender.state === "jump") return;
+    // isAirborne() - a grounded punch/kick swing can't reach someone who's
+    // genuinely off the ground, whether that's a plain jump, a juggle, or
+    // mid-way through their own airKick/flyingKick swing. checkUppercutHit
+    // deliberately does NOT carry this same exclusion - catching a juggled
+    // (or air-attacking) defender with another uppercut is the entire point
+    // of that move being a real anti-air/launcher. checkAirAttackHit below
+    // ALSO deliberately doesn't carry it - that's the one attack in this
+    // engine meant to reach an airborne target.
+    if (isAirborne(defender.state)) return;
     // Ducking clears kicks clean over the top - punches still connect
     // through a crouch, only the low kick whiffs. blockLow (crouch+block
     // held together - see fighter.js's update()) is still physically
@@ -672,7 +754,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (attacker.hasHit) return;
     attacker.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, attacker.x + SLIDE_SPEED * attacker.facing));
 
-    if (defender.state === "jump") return;
+    // isAirborne() - same as checkHit above - a ground-level sweep can't
+    // connect with someone who's genuinely up in the air, whether that's a
+    // jump, a launcher juggle, or their own air attack in progress.
+    if (isAirborne(defender.state)) return;
     const attackerCenterX = attacker.x + BODY_CENTER_OFFSET;
     const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
     if (Math.abs(attackerCenterX - defenderCenterX) >= SLIDE_HIT_RADIUS) return;
@@ -753,6 +838,17 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
     if (Math.abs(attackerCenterX - defenderCenterX) >= UPPERCUT.range) return;
 
+    // Deliberately checked BEFORE takeDamage runs (which changes
+    // defender.state to "juggled" on every uppercut hit now - see
+    // applyJuggleLaunch in fighter.js) and deliberately narrow to "jump"
+    // only, not "juggled" too: this UPPERCUT.knockback sideways shove is
+    // specifically the old "catch someone jumping over you and stop them
+    // landing past you" anti-air answer, not a launcher mechanic. A relaunch
+    // (this same function connecting again while defender.state is already
+    // "juggled") goes through takeDamage's own applyJuggleLaunch path
+    // instead, which is real vertical physics, not a horizontal shove - the
+    // two are deliberately different reactions to two different situations,
+    // caughtMidair only ever fires for the former.
     const caughtMidair = defender.state === "jump";
     attacker.hasHit = true;
     defender.takeDamage(attacker.uppercutDamage, attacker.x, "uppercut");
@@ -782,6 +878,67 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     spawnHitEffects(defender, attacker);
   }
 
+  // The aerial attack (airKick/flyingKick, fighter.js) - the move that
+  // actually DOES something with the launcher/juggle system above, and, on
+  // its own, this engine's jump-in. Two distinct jobs, one function, because
+  // both are literally the same hitbox/kind/damage landing on two different
+  // kinds of defender - see fighter.js's takeDamage for where that fork
+  // actually happens (routes into applyJuggleLaunch if defender is already
+  // "juggled", plain "hitstun" otherwise), not here.
+  //
+  // Deliberately does NOT carry any of the defender-state whiff exclusions
+  // every OTHER melee check in this file has:
+  //   - no isAirborne(defender.state) exclusion, unlike checkHit/updateSlide/
+  //     checkBuilderSpecialHit/checkHodlerSpecialHit above - reaching an
+  //     airborne (specifically "juggled") defender is the entire reason this
+  //     move exists; excluding it here would make it structurally
+  //     impossible to ever extend a juggle with anything but another
+  //     uppercut relaunch, exactly the gap this whole phase was built to
+  //     close.
+  //   - no crouch/blockLow whiff, unlike checkHit's own kind==="kick"
+  //     exclusion - a GROUNDED kick ducks clean under a crouching profile
+  //     because it swings at roughly knee/waist height; this is a strike
+  //     coming down from genuinely above the defender's head (see
+  //     spawnHitEffects' own AIR_KICK_POSES contact-height branch), which is
+  //     exactly the classic "jump-in beats a low crouch, only a raised
+  //     STANDING guard actually answers it" fighting-game read the brief
+  //     asked for - see takeDamage's blockedByLowGuard in fighter.js, which
+  //     now explicitly excludes "airKick" from what a crouching guard stops
+  //     for the same reason. blockedByStanding (unchanged - "airKick" was
+  //     never excluded from it) is what actually has to react to this.
+  function checkAirAttackHit(attacker, defender) {
+    if (attacker.state !== "airKick" && attacker.state !== "flyingKick") return;
+    if (attacker.stateT < AIR_ATTACK.activeStart || attacker.stateT > AIR_ATTACK.activeEnd) return;
+    if (attacker.hasHit) return;
+    const attackerCenterX = attacker.x + BODY_CENTER_OFFSET;
+    const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
+    if (Math.abs(attackerCenterX - defenderCenterX) >= AIR_ATTACK.range) return;
+
+    // Same wasBlocking-before-the-call pattern checkHit/updateSlide already
+    // use - only a standing guard actually stops this (see the block-gate
+    // comment above), so that's the only state worth capturing here.
+    const wasBlocking = defender.state === "block";
+    attacker.hasHit = true;
+    // "airKick" always - see AIR_KICK_POSES' own comment in fighter.js for
+    // why airKick/flyingKick collapse to one reported kind, same as every
+    // PUNCH_POSES/KICK_POSES variant already collapses to "punch"/"kick" in
+    // attackHitbox.
+    defender.takeDamage(attacker.airAttackDamage, attacker.x, "airKick");
+    // Same parry-before-normal-hit-payout ordering checkHit/checkUppercutHit
+    // both already use.
+    if (defender.lastEvent === "perfect-parry") {
+      attacker.applyParryStagger();
+      playSound("block", { rate: 1.4 });
+    } else {
+      attacker.onLandedHit("airKick");
+      attacker.lastEvent = "air-attack-hit";
+    }
+    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(attacker.airAttackDamage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
+    if (!wasBlocking) spawnHitEffects(defender, attacker);
+  }
+
   // Fires the instant the shared cast animation completes (fighter.js sets
   // this exactly once, at SPECIAL.release) - only ever reached by Flipper/
   // Collector now, since Builder/Hodler have their own dedicated melee
@@ -800,6 +957,73 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       owner: fighter,
       t: 0,
     });
+  }
+
+  // Fires the instant fighter.js's jump/airKick/flyingKick branch sets
+  // lastEvent to this - see AIR_SPECIAL's own comment in fighter.js for why
+  // there's no cast animation/state change to key off instead, unlike
+  // spawnProjectile above (which waits for SPECIAL.release at the end of a
+  // whole cast pose). Pushed into the SAME `projectiles` array the bolt/rat-
+  // rush already live in (see updateProjectiles' own "homing" branch below
+  // for its movement/hit resolution) - one array, one update loop, one draw
+  // loop, not a second parallel system.
+  function spawnHomingProjectile(fighter) {
+    if (fighter.lastEvent !== "air-special-release") return;
+    playSound("boltWhoosh", { volume: 0.6, rate: 1.25 });
+    projectiles.push({
+      kind: "homing",
+      x: fighter.x + BODY_CENTER_OFFSET + fighter.facing * 34,
+      // Launched from the caster's OWN current airborne height (not a fixed
+      // head-height the way the grounded bolt's spawn point is) - fighter.js's
+      // jumpOffset already tracks exactly how high this fighter currently is
+      // mid-flight, so subtracting it here starts the bolt visibly coming
+      // from wherever the caster actually is, not snapping to ground-level
+      // PROJECTILE_Y and floating unnaturally beneath them.
+      y: PROJECTILE_Y - fighter.jumpOffset,
+      facing: fighter.facing,
+      // Starting velocity is a straight shot in the cast direction - the
+      // curve only becomes visible once updateProjectiles' own steering
+      // starts correcting it toward the target's actual position tick over
+      // tick (see HOMING_TURN_RATE's own comment above).
+      vx: fighter.facing * HOMING_SPEED,
+      owner: fighter,
+      t: 0,
+    });
+  }
+
+  // Single-hit resolution for the homing special landing - deliberately NOT
+  // routed through applySpecialPulse's multi-pulse flurry machinery above,
+  // even though it shares almost everything else with it (kind "special" for
+  // takeDamage, the same triggerHitstop/shake/flash/spawnHitEffects call
+  // shape) - see AIR_SPECIAL's own damage comment in fighter.js for why a
+  // homing juggle-extender landing 3 pulses per cast would trivially blow
+  // through MAX_JUGGLE_HITS in a single throw. kind "special" (not
+  // "uppercut") means this can never open a fresh juggle on a grounded
+  // target on its own - fighter.js's takeDamage only routes into
+  // applyJuggleLaunch when kind==="uppercut" OR the defender is ALREADY
+  // "juggled" - so this hit either lands as an ordinary combo-scaled grounded
+  // hit, or, precisely when it's needed most, extends an existing juggle
+  // sequence through that SAME decay/hit-cap machinery, never bypassing it.
+  function applyHomingHit(p, target) {
+    target.takeDamage(p.owner.airSpecialDamage, p.x, "special");
+    p.owner.onLandedHit("special");
+    playSound("boltImpact", { volume: 0.65, rate: 1.1 });
+    shake = Math.max(shake, target.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    flash = Math.max(flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(p.owner.airSpecialDamage, target.comboCount);
+    spawnHitEffects(target, { x: p.x - BODY_CENTER_OFFSET, state: "special" });
+    // Juggled fighters never move horizontally on purpose - see the big
+    // "Airborne juggle" comment in fighter.js: update()'s own "juggled"
+    // branch only ever touches juggleY/juggleVY, this.x is a deliberate
+    // frozen non-choice. Pushing them here would fight that invariant and
+    // desync x from where checkUppercutHit/checkAirAttackHit's own fixed-
+    // range follow-up checks expect them to still be sitting. A grounded
+    // target (this hit's other valid case) gets the same small nudge every
+    // other special already gives on a landed hit.
+    if (target.state !== "juggled") {
+      target.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, target.x + p.facing * SPECIAL_PULSE_KNOCKBACK));
+    }
+    impacts.push({ x: p.x, y: p.y, t: 0 });
   }
 
   // One beat of the bolt/rat-rush flurry - shared by the instant-of-contact
@@ -875,6 +1099,77 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   function updateProjectiles() {
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const p = projectiles[i];
+
+      // Homing special - entirely its own branch, not a variant of the
+      // bolt/rat-rush's own pulsesLeft/dodge machinery below (that logic
+      // assumes a fixed straight-line trajectory and a defender who can
+      // dodge by leaving the ground - the exact opposite of what this move
+      // needs to do). Still the SAME `projectiles` array/loop/draw call
+      // (drawSurgeBlast, game.js's own render pass - "homing" isn't
+      // "ratrush" so it falls into that existing branch with no new draw
+      // code needed) as every other projectile in this file.
+      if (p.kind === "homing") {
+        const homingTarget = p.owner === p1 ? p2 : p1;
+        p.t++;
+        if (homingTarget.state === "ko") {
+          projectiles.splice(i, 1);
+          continue;
+        }
+        // Movement/steering happens every tick regardless of dodge state,
+        // same as the plain bolt/rat-rush below (their own p.x +=
+        // .../p.t++ runs unconditionally too, before their dodge check) -
+        // only the HIT is gated on dodged, not the flight itself, or a
+        // ducking target would freeze this in mid-air instead of it visibly
+        // continuing to track/fly past them.
+        const targetCenterX = homingTarget.x + BODY_CENTER_OFFSET;
+        // Proportional steering - see HOMING_TURN_RATE's own comment above
+        // for why this is recomputed fresh every tick (a moving target,
+        // never a fixed aim point) rather than locked in once at spawn.
+        const desiredVx = (targetCenterX >= p.x ? 1 : -1) * HOMING_SPEED;
+        p.vx += (desiredVx - p.vx) * HOMING_TURN_RATE;
+        p.x += p.vx;
+        // Flips the drawn sprite to face whichever way it's actually
+        // currently flying, not the direction it was cast in - a curve that
+        // bends back the way it came should visibly flip, same as every
+        // other directional FX in this file already keys off facing.
+        p.facing = p.vx >= 0 ? 1 : -1;
+        // Vertical tracking too - chases a juggled target UP, not just
+        // across, so the sprite reads as genuinely homing onto them rather
+        // than flying flat through their feet while they're launched
+        // overhead. The actual hit check right below stays x-only, same as
+        // the plain bolt/rat-rush's own hit check already is (see
+        // PROJECTILE_HIT_RADIUS's own comment for why that's always been
+        // true in this engine) - this is purely a visual-fidelity read, not
+        // a second axis of hit detection.
+        const targetY = PROJECTILE_Y - homingTarget.jumpOffset;
+        p.y += (targetY - p.y) * HOMING_TURN_RATE;
+
+        // Crouch/blockLow still duck under this the same way they duck a
+        // straight bolt (see the plain-bolt dodge comment below) - a real,
+        // physical hurtbox height change, not a positioning read this move's
+        // homing is meant to defeat. Genuinely airborne (jump/juggled/
+        // airKick/flyingKick) is deliberately NOT excluded here, unlike the
+        // straight bolt/rat-rush - reaching a target who's off the ground for
+        // ANY reason (a plain evasive jump, or - the actual point of this
+        // move - already mid-juggle) is exactly what "auto-aimed... doubles
+        // as a real juggle-extender/closer" requires, and matches the
+        // precedent checkAirAttackHit (game.js) already set for the OTHER
+        // aerial move: no isAirborne exclusion there either, since being able
+        // to reach an airborne target at all is the entire reason these
+        // moves exist.
+        const dodged = homingTarget.state === "crouch" || homingTarget.state === "blockLow";
+        if (!dodged && Math.abs(targetCenterX - p.x) < HOMING_HIT_RADIUS) {
+          applyHomingHit(p, homingTarget);
+          projectiles.splice(i, 1);
+          continue;
+        }
+
+        if (p.t > HOMING_MAX_LIFETIME_FRAMES || p.x < ARENA_MIN_X - 60 || p.x > ARENA_MAX_X + 60) {
+          projectiles.splice(i, 1);
+        }
+        continue;
+      }
+
       const isRatRush = p.kind === "ratrush";
       const target = p.owner === p1 ? p2 : p1;
 
@@ -921,9 +1216,17 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // matching every other special's "blows straight through block" - this
       // stays true pulse over pulse too (see applySpecialPulse), since
       // takeDamage's own kind !== "special" guard on block never changes.
+      // isAirborne() dodges both, same as plain "jump" always did (including
+      // now "juggled" and mid-air-attack) - this move doesn't yet know how
+      // to track/home in on an airborne target's actual height (that's
+      // explicitly future air-to-air/homing-special work, not this phase),
+      // so for now anyone off the ground for any reason just clears a
+      // projectile clean the same way a voluntary jump already does, rather
+      // than the projectile silently hitting a target it was never aimed at
+      // vertically.
       const dodged = isRatRush
-        ? target.state === "jump"
-        : target.state === "jump" || target.state === "crouch" || target.state === "blockLow";
+        ? isAirborne(target.state)
+        : isAirborne(target.state) || target.state === "crouch" || target.state === "blockLow";
       if (!dodged) {
         const targetCenterX = target.x + BODY_CENTER_OFFSET;
         const hitRadius = isRatRush ? RAT_RUSH_HIT_RADIUS : PROJECTILE_HIT_RADIUS;
@@ -962,7 +1265,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // reasoning as checkHit's own crouch/blockLow kick-whiff above) - a
     // crouching hurtbox ducks this the same way plain crouch always did,
     // regardless of whether a guard happens to be raised too.
-    if (defender.state === "crouch" || defender.state === "blockLow" || defender.state === "jump") return;
+    // isAirborne() - same reasoning as checkHit/updateSlide above, a
+    // grounded special can't reach someone genuinely off the ground for any
+    // reason (jump, juggle, or their own air attack).
+    if (defender.state === "crouch" || defender.state === "blockLow" || isAirborne(defender.state)) return;
     const attackerCenterX = attacker.x + BODY_CENTER_OFFSET;
     const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
     if (Math.abs(attackerCenterX - defenderCenterX) >= BUILDER_SPECIAL.range) return;
@@ -990,7 +1296,9 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (attacker.state !== "specialLow") return;
     if (attacker.stateT < HODLER_SPECIAL.activeStart || attacker.stateT > HODLER_SPECIAL.activeEnd) return;
     if (attacker.hasHit) return;
-    if (defender.state === "jump") return;
+    // isAirborne() - same reasoning as every other grounded-attack
+    // exclusion above.
+    if (isAirborne(defender.state)) return;
     const attackerCenterX = attacker.x + BODY_CENTER_OFFSET;
     const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
     if (Math.abs(attackerCenterX - defenderCenterX) >= HODLER_SPECIAL.range) return;
@@ -1016,8 +1324,9 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       case "special-hit":
       case "slide-hit":
       case "uppercut-hit":
+      case "air-attack-hit":
         playSound("kick", {
-          rate: fighter.lastEvent === "special-hit" ? 0.75 : fighter.lastEvent === "uppercut-hit" ? 1.3 : 1,
+          rate: fighter.lastEvent === "special-hit" ? 0.75 : fighter.lastEvent === "uppercut-hit" ? 1.3 : fighter.lastEvent === "air-attack-hit" ? 1.15 : 1,
         });
         break;
       case "block-taken":
@@ -1036,15 +1345,41 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       case "uppercut-start":
         playSound("jump", { rate: 1.3 });
         break;
+      case "air-attack-start":
+        playSound("jump", { rate: 1.15 });
+        break;
       case "special-start":
         playSound("powerfull", { rate: 1.15 });
         break;
       case "special-release":
         playSound("powerfull", { rate: 0.8 });
         break;
+      case "air-special-release":
+        playSound("powerfull", { rate: 1.2 });
+        break;
       case "ko":
         playSound("ko");
         headPops.push({ x: fighter.x, y: HEAD_Y, t: 0 });
+        break;
+      // The actual ground-impact beat of a spike ender - see fighter.js's
+      // applyJuggleSpike/the "juggled" branch's own landing check for how
+      // this fires exactly once, the frame gravity brings a SPIKED (not an
+      // ordinary juggle-fallout) defender back down to earth. Every other
+      // case in this switch reacts to a HIT landing; this is the one
+      // exception - the whole point of a spike is that the LANDING itself is
+      // a second, real impact beat a frame or several after whatever move
+      // actually did the spiking, not just a bigger version of that same
+      // hit's own feedback. Low-pitched "hit" (no dedicated thud clip - see
+      // sound.js's own CLIPS list) reads heavier than the sharp default
+      // rate, closer to a body slamming down than a strike connecting.
+      // Reuses drawEnergyBurst (impacts array, same as every other special/
+      // uppercut impact in this file) at ground level rather than adding a
+      // new draw call - a real visible burst right where they landed, on
+      // top of the shake, is what makes this actually read as a slam.
+      case "hard-knockdown-land":
+        playSound("hit", { rate: 0.6, volume: 0.9 });
+        shake = Math.max(shake, SHAKE_ON_HIT);
+        impacts.push({ x: fighter.x + BODY_CENTER_OFFSET, y: GROUND_Y - 10, t: 0 });
         break;
     }
   }
@@ -1228,6 +1563,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     checkHit(p2, p1);
     checkUppercutHit(p1, p2);
     checkUppercutHit(p2, p1);
+    checkAirAttackHit(p1, p2);
+    checkAirAttackHit(p2, p1);
     updateSlide(p1, p2);
     updateSlide(p2, p1);
     // Spawn (if this is the frame either fighter's cast just completed) and
@@ -1236,6 +1573,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // handleSounds to actually see it rather than one frame late.
     spawnProjectile(p1);
     spawnProjectile(p2);
+    spawnHomingProjectile(p1);
+    spawnHomingProjectile(p2);
     checkBuilderSpecialHit(p1, p2);
     checkBuilderSpecialHit(p2, p1);
     checkHodlerSpecialHit(p1, p2);
