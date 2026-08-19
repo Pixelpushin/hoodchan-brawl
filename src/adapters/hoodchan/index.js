@@ -22,7 +22,7 @@
 //    fallback - every token still always gets the same archetype, it's
 //    just not thematically meaningful the way a real trait mapping would be.
 
-import { CHAIN_ID_HEX, RPC_URL, fetchTokenMetadata, fetchWalletTokenIdsOnChain } from "./chain.js";
+import { CHAIN_ID_HEX, RPC_URL, fetchTokenMetadata, fetchWalletTokenIdsOnChain, readOwnerOf } from "./chain.js";
 import { fetchTokenFromApi, fetchWalletTokenIdsFromApi } from "./hoodchanApi.js";
 import { prepareHeadImage } from "../shared/head-image.js";
 
@@ -127,4 +127,12 @@ export function getFreePlayTokenIds(count) {
     pool.add(1 + Math.floor(Math.random() * MAX_TOKEN_ID));
   }
   return [...pool];
+}
+
+// Optional, not one of the 4 required exports (see ADAPTERS.md and
+// onchainhoodies/index.js's own verifyOwnership for why this checks the
+// contract directly rather than a REST/indexer source).
+export async function verifyOwnership(tokenId, address) {
+  const owner = await readOwnerOf(tokenId);
+  return owner.toLowerCase() === address.toLowerCase();
 }

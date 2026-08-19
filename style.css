@@ -9,6 +9,17 @@
   100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
 
+/* Same pop but with no translate(-50%,-50%) - unlike #result (pop-in's
+   original target), an inline child like #result-verified-badge is already
+   centered by its parent's own text-align, not by self-translating; reusing
+   pop-in as-is would leave it permanently offset by half its own box size
+   once the animation finishes. */
+@keyframes badge-pop-in {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 body {
   background: #0b0b0f;
   color: #e8e8e8;
@@ -163,6 +174,14 @@ h1 {
   font-size: 13px;
   line-height: 1.4;
   color: #b8b8c2;
+}
+
+/* Setup-screen-only entry point (see main.js) - centered under both play
+   cards rather than a corner icon like #controls-info-btn, since that one's
+   deliberately global (useful mid-match too) and this isn't. */
+#leaderboard-btn {
+  display: block;
+  margin: 26px auto 0;
 }
 
 @media (max-width: 640px) {
@@ -1033,6 +1052,26 @@ canvas {
   margin-top: 18px;
 }
 
+/* Gold border/glow (the site's one other accent color, already used by
+   #result-title's fill and .practice-toggle's focus ring) rather than the
+   usual green - deliberately reads as a different, rarer tier of win than
+   every other line on this screen. Reuses .hidden's own display:none
+   (style.css's global utility, !important) rather than a bespoke rule, so
+   there's exactly one way anything on this screen hides. */
+#result-verified-badge {
+  display: inline-block;
+  margin-top: 10px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(12px, 1.8vw, 16px);
+  letter-spacing: 0.08em;
+  color: #ffe066;
+  text-shadow: 0 0 8px #ffe066cc, 0 0 20px #ffe06666;
+  border: 2px solid #ffe066;
+  border-radius: 4px;
+  padding: 4px 14px;
+  animation: badge-pop-in 0.3s ease-out;
+}
+
 #result-actions button {
   padding: 10px 22px;
   cursor: pointer;
@@ -1350,6 +1389,87 @@ a:focus-visible {
 #gamepad-remap-list .key-row {
   justify-content: space-between;
   margin-bottom: 10px;
+}
+
+/* Right-anchored mirror of #controls-panel/#gamepad-remap-panel's own
+   fixed-sidebar treatment (border-left instead of border-right, inset
+   flipped) - deliberately the opposite side from those two so a visitor
+   can never have this and #controls-panel visually overlapping. Plain
+   hidden/shown via the global .hidden utility (see #gamepad-remap-panel
+   above) rather than #controls-panel's slide-in transform, since this one
+   doesn't need to feel reachable mid-match the way controls does. */
+#leaderboard-panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 19;
+  width: min(320px, 86vw);
+  background: #0b0b0fee;
+  border-left: 1px solid #3ddc3d44;
+  padding: 64px 22px 22px;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.leaderboard-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.leaderboard-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #d0d0d8;
+}
+
+.leaderboard-rank {
+  flex-shrink: 0;
+  width: 26px;
+  font-family: "Bungee", "Courier New", monospace;
+  color: #ffe066;
+  text-shadow: 0 0 6px #ffe06666;
+}
+
+.leaderboard-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.leaderboard-wins {
+  flex-shrink: 0;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  color: #3ddc3d;
+  text-shadow: 0 0 6px #3ddc3d66;
+}
+
+.leaderboard-empty {
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #b8b8c2;
+  text-align: center;
+  padding: 12px 0;
+}
+
+.leaderboard-loading {
+  list-style: none;
+  display: flex;
+  justify-content: center;
+  padding: 16px 0;
+}
+
+#leaderboard-close-btn {
+  width: 100%;
 }
 
 #gamepad-remap-list .rebind-btn {
