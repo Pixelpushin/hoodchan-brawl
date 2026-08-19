@@ -124,6 +124,86 @@ export function computeComboDamageScale(hitIndex) {
   return Math.max(COMBO_DAMAGE_FLOOR, Math.pow(COMBO_DAMAGE_DECAY, hitIndex - 1));
 }
 
+// --- Combo freeze-hold + enders -------------------------------------------
+// Damage-based hitstop above already makes a single big hit feel heavy, but
+// it's flat per-hit - it doesn't know or care that this is hit #4 of an
+// unbroken string. Real fighting games hold the freeze noticeably longer the
+// deeper a combo goes, on top of whatever the hit itself already earned, so
+// landing hit #4 reads as heavier to land than hit #1 even at equal damage.
+// This is a pure bonus ADDED to computeHitstopFrames' own result (see
+// triggerHitstop in game.js) - never a replacement for it. comboCount === 1
+// is just "a hit landed", not a combo yet (matches computeComboDamageScale's
+// own 1-based "opening hit" framing above), so it earns no bonus at all.
+const COMBO_FREEZE_PER_DEPTH = 1.5;
+// Capped well under HITSTOP_MAX_FRAMES' own ceiling (16) so even an
+// absurdly long string can't push the combined freeze into "the game hung"
+// territory - see COMBO_HITSTOP_TOTAL_MAX_FRAMES in game.js for the combined
+// backstop this and computeHitstopFrames' own cap add up to.
+const COMBO_FREEZE_MAX_BONUS = 14;
+export function computeComboFreezeBonus(comboCount) {
+  if (comboCount < 2) return 0;
+  return Math.min(COMBO_FREEZE_MAX_BONUS, Math.round((comboCount - 1) * COMBO_FREEZE_PER_DEPTH));
+}
+
+// What actually counts as a combo "ender" for the bigger freeze/shake/bark
+// escalation in game.js (see each checkHit/updateSlide/checkUppercutHit/
+// checkBuilderSpecialHit/checkHodlerSpecialHit/updateProjectiles hit branch's
+// own lastComboEnder-gated shake/flash/triggerHitstop calls, plus
+// maybeBarkCombo). Definition, spelled out because there's no single obvious
+// one for an
+// engine without a scripted combo-route tree: a hit is an ender if it's
+// EITHER (a) the killing blow, full stop, regardless of how it landed, OR
+// (b) it lands at real combo depth (>= COMBO_ENDER_MIN_DEPTH - a two-hit
+// string is just "a combo", not yet a finisher-worthy one) AND it's one of
+// this engine's few "hard-knockdown" class hits - uppercut/slide (both
+// already give the defender a real knockback flight instead of just
+// hitstun, this engine's closest thing to a launcher) or special (the
+// single biggest, most resource-committed hit in any kit). A pure jab/kick
+// string never qualifies on its own, no matter how deep it runs - real
+// fighting games reserve the big freeze/flourish for actually landing the
+// hardest part of the sequence, not just for mashing long enough, which is
+// also what keeps a dropped/incomplete combo reading as visibly smaller
+// than one carried to a real ender (see the design note this was built
+// from) without needing any separate "was this dropped" tracking - an
+// incomplete string simply never reaches this gate.
+const COMBO_ENDER_MIN_DEPTH = 3;
+const ENDER_KINDS = new Set(["uppercut", "slide", "special"]);
+export function isComboEnder(comboCount, kind, isKO) {
+  if (isKO) return true;
+  return comboCount >= COMBO_ENDER_MIN_DEPTH && ENDER_KINDS.has(kind);
+}
+
+// --- Punch/kick combo-string pose variety ----------------------------------
+// Every punch used to play the exact same 8-frame "attack" animation no
+// matter how many landed in a row - a real combo string reads as distinct
+// beats, not one animation looping. These still poses (see body.js/the
+// asset-registration report) exist specifically to be cycled through as a
+// combo goes deeper. PUNCH_POSES/KICK_POSES are the full set of states that
+// count as that kind of attack for hitbox/sound classification (see
+// attackHitbox and handleSounds' fix in game.js) - PUNCH_CHAIN is the
+// (smaller, ordered) subset actually cycled through by pickPunchState below;
+// groundPunch is deliberately left out of the cycle - it's a dedicated
+// anti-crouch answer instead (see pickPunchState), not a combo beat.
+export const PUNCH_POSES = ["punch", "punchStill", "punch2", "elbow", "downPunch", "groundPunch"];
+export const KICK_POSES = ["kick", "highKick"];
+const PUNCH_CHAIN = ["punch", "punchStill", "punch2", "elbow", "downPunch"];
+const KICK_CHAIN = KICK_POSES;
+// Held-pose durations for the new stills, matching each one's own ANIMS
+// entry in body.js exactly (see that file's own comment on where these
+// numbers came from) - kept here too since fighter.js's own state-duration
+// map (see the durations object in update() below) can't reach into body.js
+// without a circular import.
+const POSE_DURATIONS = {
+  punch: PUNCH.duration,
+  punchStill: 14,
+  punch2: 14,
+  elbow: 16,
+  downPunch: 16,
+  groundPunch: 18,
+  kick: KICK.duration,
+  highKick: 18,
+};
+
 // Tall/long enough that the arc actually clears over the other fighter's
 // full standing height (~109px at CHARACTER_SCALE) instead of just a hop in
 // place - see resolveCollision in game.js, which now lets fighters pass
@@ -254,6 +334,22 @@ const PARRY_POWER_GAIN = 22;
 // attack would have hit.
 const PARRY_STAGGER_FRAMES = 26;
 
+// --- High/low guard mix-up --------------------------------------------
+// Classic 3-way fighting-game height read, layered onto the single "block"
+// state above now that a second guard stance actually exists to make it
+// meaningful. Punches ("mid") are safely blockable from EITHER stance - the
+// real mixup is only between kicks/uppercut ("high" - stops standing block
+// only, whiffed clean by a crouching profile before this even runs, see
+// checkHit's own crouch/blockLow check in game.js) and slide ("low" - stops
+// the new crouching guard only). Slide used to blow straight through block
+// unconditionally, full stop - "block doing nothing against it makes
+// jumping it the actual answer" - but a crouching guard genuinely stopping
+// it (for chip damage, same as every other block) is exactly the low half
+// of this mixup the brief asks for; jumping it still works too, untouched.
+// See update()'s crouch+block branch below for how "blockLow" is entered,
+// and takeDamage's block gate for where this actually resolves.
+const GUARD_FLASH_FRAMES = 18;
+
 // The engine's 4 fixed archetype slots - every adapter (see
 // src/adapters/index.js) must map its own collection's traits onto exactly
 // these 4 names via archetypeKey. Originally named after OnChainHoodies'
@@ -338,6 +434,21 @@ export class Fighter {
     // clears it the moment it actually fires.
     this.bufferedAction = null;
     this.bufferTtl = 0;
+    // Single-frame-lived flags, same lifecycle as lastEvent (reset to a
+    // neutral value at the top of every update(), only ever set true inside
+    // takeDamage for the exact frame a real hit lands on this fighter) - see
+    // game.js's per-hit shake/flash/triggerHitstop calls and maybeBarkCombo,
+    // which read these the same frame they're set and don't need them to
+    // persist past it.
+    this.lastComboEnder = false;
+    this.lastHitKind = null;
+    // Cosmetic-only guard pose swap while standing-blocking - see
+    // takeDamage's block-taken branch (which sets these) and body.js's
+    // drawFighter (which reads them). Doesn't affect state/hit detection at
+    // all; blockLow doesn't use this, it has its own dedicated sheet drawn
+    // for the whole stance rather than just the instant of a hit.
+    this.guardFlashSheet = null;
+    this.guardFlashT = 0;
   }
 
   get name() {
@@ -460,8 +571,21 @@ export class Fighter {
     this._trackInput(input);
   }
 
-  update(input) {
+  // opponent (optional - callers with no opponent concept, if any ever show
+  // up, still work fine) is ONLY used cosmetically, to pick which punch/kick
+  // pose to display (see pickPunchState/pickKickState below) - it never
+  // affects hit detection, damage, or state timing, all of which stay
+  // exactly the caller's own responsibility via attackHitbox()/checkHit
+  // (game.js) same as before.
+  update(input, opponent) {
     this.lastEvent = null;
+    this.lastComboEnder = false;
+    this.lastHitKind = null;
+    // Ages down every real tick regardless of state, same as the input
+    // buffer above - a guard flash set the instant before a knockdown or
+    // state change shouldn't outlive its own window just because nothing
+    // else happened to reset it.
+    if (this.guardFlashT > 0) this.guardFlashT--;
     const justPressed = this._trackInput(input);
 
     if (this.state === "ko") {
@@ -499,11 +623,24 @@ export class Fighter {
     // hit detection for them, this just counts down back to idle. knockback
     // is never entered via input at all (see takeDamage), only ever reached
     // by getting hit by a slide.
-    if (["punch", "kick", "special", "specialHigh", "specialLow", "hitstun", "slide", "knockback", "uppercut", "dash"].includes(this.state)) {
+    // PUNCH_POSES/KICK_POSES beyond the base "punch"/"kick" (punchStill,
+    // punch2, elbow, downPunch, groundPunch, highKick) are just alternate
+    // held poses for the exact same two moves - they need their own entries
+    // here (recovery timing) and in attackHitbox() below (hit detection),
+    // but nowhere else; every other branch of update() that keys off
+    // this.state (jump/block/crouch/etc) never produces these states in the
+    // first place.
+    if (["punch", "kick", "special", "specialHigh", "specialLow", "hitstun", "slide", "knockback", "uppercut", "dash", ...PUNCH_POSES.filter((s) => s !== "punch"), ...KICK_POSES.filter((s) => s !== "kick")].includes(this.state)) {
       const durations = {
         punch: PUNCH.duration,
         kick: KICK.duration,
         special: SPECIAL.duration,
+        punchStill: POSE_DURATIONS.punchStill,
+        punch2: POSE_DURATIONS.punch2,
+        elbow: POSE_DURATIONS.elbow,
+        downPunch: POSE_DURATIONS.downPunch,
+        groundPunch: POSE_DURATIONS.groundPunch,
+        highKick: POSE_DURATIONS.highKick,
         specialHigh: BUILDER_SPECIAL.duration,
         specialLow: HODLER_SPECIAL.duration,
         // Scaled per-hit by takeDamage (see this.hitstunFrames there) - a
@@ -557,10 +694,26 @@ export class Fighter {
     if (this.state === "block" && !input.block) {
       this.setState("idle");
     }
+    if (this.state === "blockLow" && !(input.block && input.crouch)) {
+      this.setState("idle");
+    }
     if (this.state === "crouch" && !input.crouch) {
       this.setState("idle");
     }
 
+    // Crouching guard - the other half of the high/low mixup (see
+    // takeDamage's block gate below for what it actually stops). Holding
+    // block AND crouch together reads as this dedicated stance rather than
+    // just standing block ignoring the crouch input, so it's checked ahead
+    // of the plain block branch below - same input-priority pattern that
+    // branch already used against a simultaneous punch/etc (holding guard
+    // suppresses everything else, nothing new here). Reuses body.js's
+    // already-registered "blockLow" sheet/anim/head-anchor entries directly
+    // by state name - no new asset wiring needed there.
+    if (input.block && input.crouch) {
+      if (this.state !== "blockLow") this.setState("blockLow");
+      return;
+    }
     if (input.block) {
       if (this.state !== "block") this.setState("block");
       return;
@@ -644,18 +797,57 @@ export class Fighter {
       return;
     }
     if (justPressed.punch || this.consumeBuffered("punch")) {
-      this.setState("punch");
+      this.setState(this.pickPunchState(opponent));
       return;
     }
     if ((justPressed.kick || this.hasBuffered("kick")) && this.power >= KICK.cost) {
       this.consumeBuffered("kick");
       this.spendPower(KICK.cost);
-      this.setState("kick");
+      this.setState(this.pickKickState(opponent));
       return;
     }
 
     const vx = this.applyMove(input);
     this.state = vx !== 0 ? "walk" : "idle";
+  }
+
+  // Which punch pose to throw next - see the PUNCH_CHAIN comment above for
+  // the full reasoning. Depth is read off the OPPONENT's own comboCount, not
+  // a separately-tracked press counter on this fighter, and only while the
+  // opponent is actually still chain-locked (hitstun/knockback - the exact
+  // same "wasChaining" condition takeDamage itself uses below) - a punch
+  // thrown after the opponent has already recovered back to neutral is a
+  // fresh opener, not hit #3 of a string that already ended, even if this
+  // fighter has thrown three punches in a row without any of the later ones
+  // actually landing consecutively.
+  pickPunchState(opponent) {
+    // Every punch already connects through a crouch (see checkHit in
+    // game.js - only kick is ducked) - groundPunch is purely a themed
+    // "aimed low" answer to a turtling crouch, not a new way to beat it
+    // mechanically. Checked first and unconditionally (not folded into the
+    // chain-depth cycle below) since a crouching opponent can never
+    // simultaneously be mid-hitstun-chain - the two states are mutually
+    // exclusive - so there's no ordering ambiguity between this and the
+    // depth check.
+    // blockLow is still a crouching profile underneath the guard - same
+    // themed "aimed low" answer applies there too, cosmetics only (the real
+    // hit is still a plain "punch" per PUNCH_POSES/attackHitbox either way,
+    // and whether it actually connects or gets chip-blocked is takeDamage's
+    // call, not this one's).
+    if (opponent && (opponent.state === "crouch" || opponent.state === "blockLow")) return "groundPunch";
+    const chaining = opponent && (opponent.state === "hitstun" || opponent.state === "knockback");
+    const depth = chaining ? opponent.comboCount : 0;
+    return PUNCH_CHAIN[depth % PUNCH_CHAIN.length];
+  }
+
+  // Same idea as pickPunchState, just the smaller 2-pose kick set - no
+  // anti-crouch case here, a kick already whiffs clean over a crouch
+  // regardless of which pose it'd have used (see checkHit's crouch/kick
+  // check), so there's nothing for a themed variant to answer.
+  pickKickState(opponent) {
+    const chaining = opponent && (opponent.state === "hitstun" || opponent.state === "knockback");
+    const depth = chaining ? opponent.comboCount : 0;
+    return KICK_CHAIN[depth % KICK_CHAIN.length];
   }
 
   // Collision (keeping the two fighters from ever overlapping) is resolved
@@ -697,7 +889,12 @@ export class Fighter {
   // game.js, which handles its hit detection independently once the
   // projectile it fires is actually in flight.
   attackHitbox() {
-    const spec = this.state === "punch" ? PUNCH : this.state === "kick" ? KICK : null;
+    // Every pose in PUNCH_POSES/KICK_POSES (punchStill/punch2/elbow/
+    // downPunch/groundPunch, highKick) shares its family's real move data
+    // wholesale (same damage/range/timing as the original punch/kick) - this
+    // is a visual/combo-string layer on top of the existing balance, not a
+    // new set of moves with their own numbers to separately tune.
+    const spec = PUNCH_POSES.includes(this.state) ? PUNCH : KICK_POSES.includes(this.state) ? KICK : null;
     if (!spec) return null;
     if (this.stateT < spec.activeStart || this.stateT > spec.activeEnd) return null;
     if (this.hasHit) return null;
@@ -776,15 +973,31 @@ export class Fighter {
     // design. stateT here is exactly "frames since block was raised" (see
     // the big comment on PARRY_WINDOW_FRAMES above for why that's reliable).
     const isPerfectParry = this.state === "block" && this.stateT <= PARRY_WINDOW_FRAMES;
-    // Specials and slides both blow straight through a raised guard - full
-    // damage even if the defender was holding block when it landed. A slide
-    // is meant to be dodged by jumping over it, not blocked; block doing
-    // nothing against it makes that the actual answer instead of a false one.
-    if ((this.state === "block" || isHolding) && kind !== "special" && kind !== "slide") {
+    // High/low guard mix-up (see the GUARD_FLASH_FRAMES comment above for
+    // the full reasoning): standing block stops mid punches and high
+    // kicks/uppercut, same as it always did, but is helpless against a
+    // slide same as before slide even existed as a real kind here. blockLow
+    // (crouch+block held together, see update()) is the crouching answer -
+    // flipped the other way, it stops that same slide plus punches, but
+    // does nothing against kick/uppercut. Kicks never actually reach this
+    // far while crouching (checkHit's own crouch/blockLow whiff in game.js
+    // already excludes them before takeDamage is even called), so the
+    // `kind !== "kick"` exclusion below is belt-and-suspenders; uppercut
+    // DOES reach here, and this is what actually makes it whiff a crouching
+    // guard the way a real anti-air should - the one thing genuinely new to
+    // verify (see the crouch-exploit re-check this was built against).
+    // Specials always blow straight through either guard, full stop -
+    // unchanged.
+    const blockedByStanding = (this.state === "block" || isHolding) && kind !== "special" && kind !== "slide";
+    const blockedByLowGuard = this.state === "blockLow" && kind !== "special" && kind !== "kick" && kind !== "uppercut";
+    if (blockedByStanding || blockedByLowGuard) {
       if (isPerfectParry) {
         // Full negate, not just a discount - a perfect parry has to feel
         // categorically better than plain block or there's no reason to
-        // ever attempt the tighter timing over just holding guard.
+        // ever attempt the tighter timing over just holding guard. Standing
+        // block only (see isPerfectParry above) - blockLow doesn't get a
+        // parry window, same reasoning Hodler's own holding stance doesn't:
+        // it's a new, narrower guard option, not a strictly-better one.
         this.power = Math.min(MAX_POWER, this.power + PARRY_POWER_GAIN);
         this.lastEvent = "perfect-parry";
       } else {
@@ -794,6 +1007,19 @@ export class Fighter {
         // beyond just "take less damage this once".
         this.power = Math.min(MAX_POWER, this.power + BLOCK_POWER_GAIN);
         this.lastEvent = "block-taken";
+        // Cosmetic guard-pose swap, standing block only - see body.js's
+        // drawFighter, which reads this to pick block vs block2 while
+        // state==="block". blockLow already has its own dedicated sheet
+        // drawn for the whole stance, not just the instant of a hit, so it
+        // doesn't need this at all. kind here is never "kick" (blockLow
+        // can't reach this branch on a kick - see blockedByLowGuard above),
+        // but uppercut reads as the same "high" family as a kick
+        // cosmetically even though only standing block ever actually stops
+        // it.
+        if (this.state === "block") {
+          this.guardFlashSheet = kind === "kick" || kind === "uppercut" ? "block2" : "block";
+          this.guardFlashT = GUARD_FLASH_FRAMES;
+        }
       }
     } else {
       // A continuation of the SAME combo only if this fighter was still
@@ -821,11 +1047,21 @@ export class Fighter {
       // push, this just picks which animation plays while it happens.
       this.setState(kind === "slide" ? "knockback" : "hitstun");
       this.lastEvent = "hit-taken";
+      this.lastHitKind = kind;
     }
     this.health = Math.max(0, this.health);
     if (this.health <= 0) {
       this.setState("ko");
       this.lastEvent = "ko";
+    }
+    // Computed last, after health's own KO clamp above, so isComboEnder sees
+    // the final post-hit health (isKO must reflect whether THIS hit was the
+    // killing blow, not health from some earlier moment). Left false (the
+    // constructor/update() default) for the block/perfect-parry branches
+    // above - lastHitKind stays null there too - since neither is a real
+    // landed hit, there's no combo depth or ender to escalate.
+    if (this.lastEvent === "hit-taken" || this.lastEvent === "ko") {
+      this.lastComboEnder = isComboEnder(this.comboCount, kind, this.health <= 0);
     }
   }
 }

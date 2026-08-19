@@ -182,13 +182,30 @@ function initRemapUI() {
   const remapPanel = document.getElementById("gamepad-remap-panel");
   const doneBtn = document.getElementById("gamepad-remap-done");
   const resetBtn = document.getElementById("gamepad-remap-reset");
+  // Both panels share the same fixed left-sidebar slot (see style.css's own
+  // comment on #gamepad-remap-panel) and the remap panel's background isn't
+  // fully opaque (#0b0b0fee), so simply layering it on top via z-index alone
+  // left the controls panel's own key list ghosting through underneath -
+  // readable as unreadable overlapping/doubled text rather than a clean
+  // sidebar swap. Actually hiding #controls-panel for the duration (restored
+  // the instant remap closes, via Done or the gamepad B-back-button) is what
+  // makes this read as one panel replacing another instead of two panels
+  // stacked on the same spot.
+  const controlsPanel = document.getElementById("controls-panel");
   if (!remapBtn || !remapPanel) return;
 
-  remapBtn.addEventListener("click", () => {
+  function openRemapPanel() {
     renderRemapList();
     remapPanel.classList.remove("hidden");
-  });
-  doneBtn.addEventListener("click", () => remapPanel.classList.add("hidden"));
+    if (controlsPanel) controlsPanel.style.visibility = "hidden";
+  }
+  function closeRemapPanel() {
+    remapPanel.classList.add("hidden");
+    if (controlsPanel) controlsPanel.style.visibility = "";
+  }
+
+  remapBtn.addEventListener("click", openRemapPanel);
+  doneBtn.addEventListener("click", closeRemapPanel);
   resetBtn.addEventListener("click", () => {
     resetGamepadMap();
     renderGamepadKeyList();
@@ -282,6 +299,13 @@ export function initGamepadNav() {
       const remapPanel = document.getElementById("gamepad-remap-panel");
       if (!isHiddenScreen(remapPanel)) {
         remapPanel.classList.add("hidden");
+        // Mirrors initRemapUI's own closeRemapPanel - the controls panel
+        // was hidden (style.visibility) for the duration of the remap
+        // overlay, not just covered by z-index, so backing out via the
+        // gamepad's B button has to restore it the same way Done does or
+        // it's stuck invisible even though .open is still set.
+        const controlsPanel = document.getElementById("controls-panel");
+        if (controlsPanel) controlsPanel.style.visibility = "";
       } else {
         document.getElementById("controls-panel")?.classList.remove("open");
       }

@@ -3,7 +3,7 @@
 // game.js can drive an AI fighter through the identical update() path a
 // real player uses instead of needing a special case.
 
-import { SLIDE } from "./fighter.js";
+import { SLIDE, UPPERCUT, PUNCH_POSES, KICK_POSES } from "./fighter.js";
 
 const ENGAGE_RANGE = 95; // close the gap if farther than this
 const ATTACK_RANGE = 82; // attempt an attack once this close
@@ -53,19 +53,30 @@ export function createAIController(self, opponent) {
     const dist = Math.abs(dx);
     const towardOpponent = dx > 0 ? "right" : "left";
 
-    // A slide can only actually be answered by jumping it - block and crouch
-    // both do nothing against it - so it gets its own reaction check ahead
-    // of the generic one below, at high odds (jumping it is close to the
-    // only sane response) and across a wider window than a normal swing
-    // since it closes distance instead of staying in place. Slide is now a
-    // real telegraphed, punishable-by-dodge move (it costs real power to
-    // throw), so this needs to actually be a reliable read rather than
-    // something that only shows up once the AI is already hurt - scaled off
-    // a high floor (0.5) instead of straight multiplying difficulty, so
-    // even at DIFFICULTY_MIN this is a ~68% dodge instead of ~25%.
-    if (opponent.state === "slide" && dist < SLIDE_REACT_RANGE && Math.random() < 0.5 + 0.5 * difficulty) {
-      input.jump = true;
-      return;
+    // Jumping a slide is still the clean, zero-damage answer and gets first
+    // crack at it - high odds (close to the only sane response), wide
+    // window (it closes distance instead of staying in place), scaled off a
+    // high floor (0.5) instead of straight multiplying difficulty so even
+    // at DIFFICULTY_MIN this is a ~68% dodge instead of ~25%.
+    if (opponent.state === "slide" && dist < SLIDE_REACT_RANGE) {
+      if (Math.random() < 0.5 + 0.5 * difficulty) {
+        input.jump = true;
+        return;
+      }
+      // Crouch+block (blockLow) is the OTHER thing that actually stops a
+      // slide now - the low half of the standing/crouching guard mixup (see
+      // fighter.js's takeDamage) - and doesn't need a jump's frame-perfect
+      // timing, so a whiffed jump-read still has a real shot at only chip
+      // damage instead of eating the slide clean. Deliberately a smaller,
+      // separate roll rather than folded into the jump check above - this
+      // is a fallback for missing the better answer, not a replacement for
+      // it, and shouldn't make the slide trivially safe to throw into
+      // either.
+      if (Math.random() < 0.35 * difficulty) {
+        input.block = true;
+        input.crouch = true;
+        return;
+      }
     }
     // Opponent jumping in close is exactly what the uppercut exists to
     // punish - occasionally take the anti-air instead of just blocking/
@@ -78,10 +89,16 @@ export function createAIController(self, opponent) {
 
     // React to the opponent actively attacking - duck a kick, block a punch,
     // roughly half the time (scaled by difficulty) so it isn't a perfect
-    // read every single swing.
-    const opponentAttacking = ["punch", "kick", "special"].includes(opponent.state) && opponent.stateT < 10;
+    // read every single swing. PUNCH_POSES/KICK_POSES (not literal "punch"/
+    // "kick") - a combo's later beats cycle through punch2/elbow/downPunch/
+    // groundPunch/highKick (see fighter.js), and this needs to keep reacting
+    // to those exactly like the opening hit, or the AI would go completely
+    // blind to (and stop ever ducking/blocking) anything past the first hit
+    // of a real combo string.
+    const isKickPose = KICK_POSES.includes(opponent.state);
+    const opponentAttacking = (PUNCH_POSES.includes(opponent.state) || isKickPose || opponent.state === "special") && opponent.stateT < 10;
     if (opponentAttacking && dist < ATTACK_RANGE + 20 && Math.random() < 0.5 * difficulty) {
-      if (opponent.state === "kick" && Math.random() < 0.6) {
+      if (isKickPose && Math.random() < 0.6) {
         input.crouch = true;
       } else if (opponent.state !== "special") {
         input.block = true;
@@ -116,16 +133,29 @@ export function createAIController(self, opponent) {
 
     if (dist <= ATTACK_RANGE) {
       const roll = Math.random();
-      // Kick and special both whiff clean over a crouching opponent (see
-      // checkHit's crouch/kick check and updateProjectiles' crouch dodge) -
-      // throwing them anyway just burns power for nothing and lets a
-      // turtling opponent poke for free with punch, which connects through
-      // crouch regardless. Was the actual mechanism behind "hold crouch,
-      // spam punch, win every time" - the AI kept feeding a defense it had
-      // no way to beat. Slide isn't dodged by crouch (only a jump answers
-      // it, per the slide-react check above), so it's the real punish here.
-      if (opponent.state === "crouch") {
-        if (self.power >= SLIDE.cost && roll < 0.35) {
+      // Kick and special both whiff clean over a crouching opponent, guard
+      // raised or not (see checkHit's crouch/blockLow kick check and
+      // updateProjectiles' crouch/blockLow dodge) - throwing them anyway
+      // just burns power for nothing. Was the actual mechanism behind "hold
+      // crouch, spam punch, win every time" against the OLD ai.js (kick/
+      // special wasted into a crouching opponent instead of the punch that
+      // actually connects) - still true here regardless of which of the two
+      // crouching states the opponent is actually in, which is the specific
+      // thing to re-verify after adding blockLow: it must never regress
+      // back into wasting power on a kick/special against either one.
+      if (opponent.state === "crouch" || opponent.state === "blockLow") {
+        // blockLow is a genuine guard, not just a duck - it now stops both
+        // slide and punch (chip damage - see the high/low guard mixup in
+        // fighter.js's takeDamage), so neither is the free punish plain
+        // crouch still is. Uppercut is the one thing that actually beats it
+        // clean (a crouching hurtbox still ducks kick/special regardless,
+        // but doesn't stop an anti-air) - lean on that instead specifically
+        // when a guard is actually up. Against plain crouch (no guard
+        // raised), slide stays the real free punish, same as before this
+        // mechanic existed.
+        if (opponent.state === "blockLow" && self.power >= UPPERCUT.cost && roll < 0.4) {
+          input.uppercut = true;
+        } else if (opponent.state === "crouch" && self.power >= SLIDE.cost && roll < 0.35) {
           input.slide = true;
         } else if (roll < 0.9) {
           input.punch = true;

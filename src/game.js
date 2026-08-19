@@ -12,11 +12,14 @@ import {
   drawRatRush,
   drawEnergyBurst,
   drawHitSpark,
+  drawComboSwish,
+  drawComboPow,
   BLOOD_SPATTER_TOTAL_FRAMES,
   SURGE_BLAST_TOTAL_FRAMES,
   ENERGY_BURST_TOTAL_FRAMES,
   HIT_SPARK_TOTAL_FRAMES,
   HEAD_POP_DURATION,
+  COMBO_POW_DURATION,
   GROUND_Y,
 } from "./body.js";
 import {
@@ -30,6 +33,8 @@ import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   computeHitstopFrames,
+  computeComboFreezeBonus,
+  KICK_POSES,
 } from "./fighter.js";
 import { playSound } from "./sound.js";
 import { createAIController } from "./ai.js";
@@ -69,7 +74,41 @@ const KEYMAP = {
 
 const SHAKE_ON_HIT = 6;
 const SHAKE_ON_SPECIAL = 12;
+// Combo-ender escalation - clearly bigger than either baseline above, but not
+// by an order of magnitude, since shake is drawn as a per-frame random
+// translate (see loop()'s `if (shake > 0)` branches) and an excessive value
+// there reads as broken jitter rather than "big hit". Reserved for hits where
+// defender.lastComboEnder is true (see isComboEnder in fighter.js) - checked
+// at each checkHit/updateSlide/checkUppercutHit/checkBuilderSpecialHit/
+// checkHodlerSpecialHit/updateProjectiles hit branch below.
+const SHAKE_ON_ENDER = 22;
 const FLASH_ON_HIT = 0.25;
+const FLASH_ON_ENDER = 0.5;
+
+// Combo "charge-up" FX escalation - a pure function of the defender's own
+// comboCount (see takeDamage in fighter.js), not a variable this module
+// tracks itself, so a combo dropping back to 1 mid-match just falls straight
+// back to NONE next hit with nothing to reset - there's no persisted
+// "current tier" to get stuck holding an elevated value. Design brief: hit 1
+// bare, hit 2 a plain swish, hit 3 a bigger colored swish, hit 4 that swish
+// plus a pow burst, hit 5+ the biggest swish plus the biggest burst.
+const COMBO_FX_TIER = { NONE: "none", SWISH: "swish", SWISH_COLORED: "swish-colored", POW: "pow", BIG_POW: "big-pow" };
+function getComboFxTier(comboCount) {
+  if (comboCount >= 5) return COMBO_FX_TIER.BIG_POW;
+  if (comboCount === 4) return COMBO_FX_TIER.POW;
+  if (comboCount === 3) return COMBO_FX_TIER.SWISH_COLORED;
+  if (comboCount === 2) return COMBO_FX_TIER.SWISH;
+  return COMBO_FX_TIER.NONE;
+}
+// Tier 4/5 are already the big moments on their own - this just nudges a
+// long-running string (6, 7, 8+ hits) a little further past whichever of
+// those it's landed on rather than flatlining at the same size forever,
+// capped so it never runs away.
+function comboPowScale(comboCount) {
+  return Math.min(1.8, 1.3 + Math.max(0, comboCount - 4) * 0.1);
+}
+const COMBO_SWISH_LIFETIME_FRAMES = 16;
+const COMBO_SWISH_FADE_FRAMES = 6;
 // How long the winner's flex (and the loser's own finishing animation)
 // keeps playing after a round ends before actually moving on - long enough
 // for a short spoken victory line to finish, not just an instant flash.
@@ -103,6 +142,35 @@ const PROJECTILE_SPRITE_TICKS_PER_FRAME = 2;
 const RAT_RUSH_SPEED = 10;
 const RAT_RUSH_HIT_RADIUS = 45;
 const RAT_RUSH_SPRITE_TICKS_PER_FRAME = 3;
+
+// --- Bolt/rat-rush multi-hit flurry ---------------------------------------
+// Both of these are ranged - once one connects, the defender is genuinely
+// locked in real hitstun (Fighter.update() early-returns on "hitstun", no
+// input read at all), so this reads as a short scripted flurry riding that
+// lockout rather than a fresh hit-radius check every tick: the ONLY real
+// "escape" window is before the first pulse ever lands (dodged, below, same
+// as it always was) - exactly how a real fighting-game multi-hit super
+// works, and why there's no soft-lock risk either (pulsesLeft only ever
+// counts down, never resets, so the sequence always terminates in exactly
+// SPECIAL_PULSE_COUNT beats regardless of what either fighter does).
+const SPECIAL_PULSE_COUNT = 3;
+// Real ticks between each follow-up pulse once the flurry has started (NOT
+// counting whatever extra frames that pulse's own triggerHitstop freezes on
+// top - updateProjectiles doesn't run at all during a hitstop freeze, so the
+// freeze can't eat into this). Comfortably shorter than computeHitstunFrames'
+// own floor (14, fighter.js) even at the smallest pulse damage this move can
+// ever deal, so the defender is never actually free to act between pulses -
+// verified live (see the multi-hit special report) rather than just assumed.
+const SPECIAL_PULSE_INTERVAL_FRAMES = 10;
+// Each pulse's push, applied a few times rather than once - "a few paces
+// total across the sequence", not a single big shove on pulse one. p.facing
+// (the direction the projectile launched in, locked at spawn) drives the
+// direction rather than a live attacker-vs-defender position compare, since
+// the caster may already be several frames into their own recovery/hitstun
+// by the time a later pulse in this same sequence fires - "away from
+// wherever this was thrown from" is what should track, not a stale read of
+// wherever the caster happens to be standing right now.
+const SPECIAL_PULSE_KNOCKBACK = 20;
 // How fast the slide closes distance - a short, committal burst (11 frames
 // at SLIDE.duration in fighter.js, ~175px max) meant to close one engage-
 // range gap and get under a jump, not cross the arena. It used to be tuned
@@ -235,8 +303,20 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // via triggerHitstop so multiple hits landing the same frame always keep
   // the larger of their two freezes rather than one clobbering the other.
   let hitstopFrames = 0;
-  function triggerHitstop(damage) {
-    hitstopFrames = Math.max(hitstopFrames, computeHitstopFrames(damage));
+  // COMBO_HITSTOP_TOTAL_MAX_FRAMES: computeHitstopFrames alone already caps
+  // at 16 (fighter.js's HITSTOP_MAX_FRAMES) and computeComboFreezeBonus caps
+  // its own contribution at 14, so 30 is already the natural ceiling of the
+  // sum below - this is a documented backstop, not something that actually
+  // binds today, but keeps that guarantee explicit here rather than only
+  // true by coincidence of two separately-tuned constants in another file.
+  const COMBO_HITSTOP_TOTAL_MAX_FRAMES = 30;
+  // comboCount defaults to 1 (computeComboFreezeBonus's own "not a combo
+  // yet" floor) - every call site below only passes a real comboCount when
+  // the hit actually landed clean (see each one's own comment), so a block/
+  // parry never contributes a freeze bonus on top of its own flat hitstop.
+  function triggerHitstop(damage, comboCount = 1) {
+    const total = computeHitstopFrames(damage) + computeComboFreezeBonus(comboCount);
+    hitstopFrames = Math.max(hitstopFrames, Math.min(COMBO_HITSTOP_TOTAL_MAX_FRAMES, total));
   }
   const powerFullFired = { p1: false, p2: false };
   const groundBlood = [];
@@ -246,6 +326,11 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   const projectiles = [];
   const impacts = [];
   const hitSparks = [];
+  // Combo escalation FX - separate from impacts/hitSparks above (those are
+  // the plain per-hit feedback every landed hit already gets) so this layer
+  // can come and go with comboCount without touching that baseline.
+  const comboSwishes = [];
+  const comboPops = [];
 
   // Rough head height rather than a per-frame anchor lookup - matches the
   // same level-of-precision the blood-spatter positioning already uses.
@@ -287,8 +372,12 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // was.
     const gapX = Math.abs(attackerCenterX - defenderCenterX);
     const towardAttacker = attackerCenterX >= defenderCenterX ? 1 : -1;
+    // KICK_POSES (not a literal "kick" check) - a landed highKick is still a
+    // kick-height hit, same as the original kick sheet, even though its own
+    // state string is "highKick" now that punch/kick attacks cycle through
+    // several pose states (see PUNCH_POSES/KICK_POSES in fighter.js).
     const contactHeight =
-      attacker.state === "kick" || attacker.state === "slide"
+      KICK_POSES.includes(attacker.state) || attacker.state === "slide"
         ? GROUND_Y - 20
         : attacker.state === "special"
           ? PROJECTILE_Y
@@ -303,6 +392,31 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // blood was unlocked), so a landed hit read as silently absorbed even
     // though damage really did register. See drawHitSpark in body.js.
     hitSparks.push({ x: contactX, y: contactHeight, t: 0 });
+
+    // Combo charge-up escalation - always-on like the hit spark above (not
+    // gated on the blood setting below), since it's readability/feel for the
+    // combo itself, not a gore option. defender is always the real p1/p2
+    // Fighter this comboCount lives on, but attacker sometimes isn't (the
+    // specials call sites above pass a synthetic {x, state} object instead
+    // of the real owner) - "whichever player defender ISN'T" is always
+    // correct here regardless, since this is strictly a 1v1 game.
+    const comboTier = getComboFxTier(defender.comboCount);
+    if (comboTier !== COMBO_FX_TIER.NONE) {
+      // Swish leans the direction the hit actually traveled (toward the
+      // defender, away from the attacker) rather than a fixed orientation,
+      // with a little jitter so repeated hits in one string don't all look
+      // like the exact same stamp.
+      const swishRotation = (towardAttacker === -1 ? Math.PI : 0) + (Math.random() - 0.5) * 0.4;
+      // level 0/1/2 - see body.js's SWISH_LEVELS. SWISH_COLORED and POW share
+      // level 1 (POW just additionally layers a pow burst on top of it);
+      // BIG_POW steps up to level 2, the biggest swish art.
+      const swishLevel = comboTier === COMBO_FX_TIER.SWISH ? 0 : comboTier === COMBO_FX_TIER.BIG_POW ? 2 : 1;
+      const swishScale = comboTier === COMBO_FX_TIER.SWISH ? 1 : comboTier === COMBO_FX_TIER.BIG_POW ? 1.9 : 1.6;
+      comboSwishes.push({ x: contactX, y: contactHeight, rotation: swishRotation, scale: swishScale, level: swishLevel, t: 0 });
+      if (comboTier === COMBO_FX_TIER.POW || comboTier === COMBO_FX_TIER.BIG_POW) {
+        comboPops.push({ x: contactX, y: contactHeight, scale: comboPowScale(defender.comboCount), big: comboTier === COMBO_FX_TIER.BIG_POW, t: 0 });
+      }
+    }
 
     // Everything below is blood - hidden by default, Mortal Kombat-style -
     // see blood-code.js for the secret sequence that unlocks it.
@@ -426,6 +540,34 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       drawHitSpark(ctx, hs.x, hs.y, spriteFrame);
       if (!paused) hs.t++;
     }
+    // Combo swish/pop - same fade-then-expire pattern as splatExtras/impacts
+    // above, kept as their own loops rather than folded into those so the
+    // combo escalation reads as a distinct visual layer (drawn on top of the
+    // baseline hit spark, same draw-order-is-front-to-back rule this whole
+    // function follows).
+    for (let i = comboSwishes.length - 1; i >= 0; i--) {
+      const s = comboSwishes[i];
+      if (s.t >= COMBO_SWISH_LIFETIME_FRAMES) {
+        comboSwishes.splice(i, 1);
+        continue;
+      }
+      const fadeIn = COMBO_SWISH_LIFETIME_FRAMES - COMBO_SWISH_FADE_FRAMES;
+      const alpha = s.t < fadeIn ? 1 : 1 - (s.t - fadeIn) / COMBO_SWISH_FADE_FRAMES;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      drawComboSwish(ctx, s.x, s.y, s.level, s.rotation, s.scale);
+      ctx.restore();
+      if (!paused) s.t++;
+    }
+    for (let i = comboPops.length - 1; i >= 0; i--) {
+      const p = comboPops[i];
+      if (p.t >= COMBO_POW_DURATION) {
+        comboPops.splice(i, 1);
+        continue;
+      }
+      drawComboPow(ctx, p.x, p.y, p.t, p.big, p.scale);
+      if (!paused) p.t++;
+    }
     for (let i = headPops.length - 1; i >= 0; i--) {
       const p = headPops[i];
       if (p.t >= HEAD_POP_DURATION) {
@@ -461,56 +603,6 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     ctx.restore();
   }
 
-  // --- Announcer barks -------------------------------------------------
-  // Reuses the exact same pre-fight taunt bubble + speakTaunt(text) call the
-  // round-intro/victory-quote flow already drives (see main.js's showTaunt
-  // and endRound's own quote handling below) rather than a new overlay or
-  // audio pipeline - these are just mid-fight callouts fired into the same
-  // two elements, at a faster/punchier rate (1.25 vs the pre-fight taunts'
-  // 1.05) since they're quick single-line reactions, not a spoken line the
-  // countdown is holding open for. Unlike the pre-fight taunts, these are
-  // meant to fire repeatedly through a single round.
-  const BARK_BUBBLE_FRAMES = 90;
-  const barkTimer = { p1: 0, p2: 0 };
-  function announceBark(side, text) {
-    const bubbleEl = document.getElementById(side === "p1" ? "taunt-p1" : "taunt-p2");
-    bubbleEl.textContent = text;
-    bubbleEl.classList.remove("hidden");
-    barkTimer[side] = BARK_BUBBLE_FRAMES;
-    // Fire-and-forget - awaiting would stall this frame's render, and
-    // speechSynthesis.speak() already queues back-to-back utterances on its
-    // own rather than clobbering whatever's still playing.
-    speakTaunt(text, { rate: 1.25 });
-  }
-
-  // Tracks the highest comboCount already barked for THIS fighter's CURRENT
-  // streak, not just "have we barked at all" - a combo that keeps growing
-  // (2 -> 3 -> 4) should call out every new milestone, not go silent after
-  // the first. Reset the instant comboCount itself drops back to <= 1
-  // (recovered, or takeDamage started a fresh unrelated count - see its
-  // wasChaining check) so the next real combo starts barking from "DOUBLE
-  // HIT!" again instead of staying silent because some earlier streak this
-  // round already passed that count.
-  const comboBarkState = { p1: 0, p2: 0 };
-  function comboBarkLine(count) {
-    if (count === 2) return "DOUBLE HIT!";
-    if (count === 3) return "TRIPLE HIT!";
-    return `${count} HIT COMBO!`;
-  }
-  // defender is whoever is actually taking the combo (comboCount lives on
-  // them - see takeDamage) but the callout is credited to whoever's LANDING
-  // it, so the bubble shows over the attacker's side of the HUD.
-  function maybeBarkCombo(defender, defenderSide, attackerSide) {
-    if (defender.comboCount <= 1) {
-      comboBarkState[defenderSide] = 0;
-      return;
-    }
-    if (defender.comboCount > comboBarkState[defenderSide]) {
-      comboBarkState[defenderSide] = defender.comboCount;
-      announceBark(attackerSide, comboBarkLine(defender.comboCount));
-    }
-  }
-
   // Punch/kick only now - special has no melee hitbox of its own, see
   // spawnProjectile/updateProjectiles below for its (ranged) hit detection.
   function checkHit(attacker, defender) {
@@ -518,12 +610,20 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (!box) return;
     if (defender.state === "jump") return;
     // Ducking clears kicks clean over the top - punches still connect
-    // through a crouch, only the low kick whiffs.
-    if (defender.state === "crouch" && box.kind === "kick") return;
+    // through a crouch, only the low kick whiffs. blockLow (crouch+block
+    // held together - see fighter.js's update()) is still physically
+    // crouching underneath the guard, so a kick ducks clean under it the
+    // exact same way - the high/low guard mixup in takeDamage is about
+    // whether a raised guard STOPS a hit that would otherwise land, not
+    // about what a crouching hurtbox already dodges regardless of guard.
+    if ((defender.state === "crouch" || defender.state === "blockLow") && box.kind === "kick") return;
     const lo = Math.min(box.from, box.to);
     const hi = Math.max(box.from, box.to);
     if (defender.x >= lo && defender.x <= hi) {
-      const wasBlocking = defender.state === "block";
+      // blockLow only actually blocks punches here (kicks already returned
+      // above) - see takeDamage's blockedByLowGuard - so this is accurate
+      // without needing to know box.kind itself.
+      const wasBlocking = defender.state === "block" || defender.state === "blockLow";
       attacker.hasHit = true;
       defender.takeDamage(box.damage, attacker.x, box.kind);
       // Checked BEFORE onLandedHit/lastEvent below, not after - a parried
@@ -534,14 +634,26 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       if (defender.lastEvent === "perfect-parry") {
         attacker.applyParryStagger();
         playSound("block", { rate: 1.4 });
-        announceBark(defender === p1 ? "p1" : "p2", "PERFECT PARRY!");
       } else {
         attacker.onLandedHit(box.kind);
-        attacker.lastEvent = `${attacker.state}-hit`;
+        // box.kind, not attacker.state - punch/kick attacks now cycle
+        // through several pose states (punch2/elbow/downPunch/groundPunch/
+        // highKick, see PUNCH_POSES/KICK_POSES in fighter.js), so
+        // `${attacker.state}-hit` would silently stop matching
+        // handleSounds' switch below the instant a combo reached its second
+        // beat. box.kind is always the plain "punch"/"kick" family name
+        // regardless of which pose actually threw it.
+        attacker.lastEvent = `${box.kind}-hit`;
       }
-      shake = Math.max(shake, SHAKE_ON_HIT);
-      flash = Math.max(flash, FLASH_ON_HIT);
-      triggerHitstop(box.damage);
+      // defender.lastComboEnder/comboCount are single-frame-lived, set by
+      // takeDamage just above - both stay at their neutral defaults (false /
+      // whatever comboCount already was) on the block/perfect-parry
+      // branches, so this naturally falls back to the plain SHAKE_ON_HIT/
+      // no-freeze-bonus behavior for anything that isn't a genuine landed
+      // hit, with no extra gating needed here.
+      shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+      flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+      triggerHitstop(box.damage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
       if (!wasBlocking) spawnHitEffects(defender, attacker);
     }
   }
@@ -577,19 +689,49 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       return;
     }
 
+    // Captured BEFORE takeDamage - a blocked slide never changes
+    // defender.state away from "blockLow" (takeDamage's blocked branch only
+    // ever sets lastEvent/health/power, see fighter.js), so this reads the
+    // same either way, but matching checkHit's own wasBlocking-before-the-
+    // call pattern rather than relying on that just in case that ever
+    // changes underneath this.
+    const wasBlocking = defender.state === "blockLow";
     attacker.hasHit = true;
     defender.takeDamage(attacker.slideDamage, attacker.x, "slide");
+    // Same as checkHit - onLandedHit fires whether the hit actually landed
+    // clean or only got through as chip, mirroring how every other attack
+    // already rewards committing to a swing that at least connects through
+    // guard.
     attacker.onLandedHit("slide");
-    const pushDir = defenderCenterX >= attackerCenterX ? 1 : -1;
-    // Flies out over the knockback state's own duration (see setKnockbackMotion/
-    // jumpOffset in fighter.js) instead of teleporting straight to the final
-    // spot - a real launch-and-land arc, not an instant snap-then-freeze.
-    defender.setKnockbackMotion(pushDir, SLIDE.knockback);
+    if (!wasBlocking) {
+      // Slide no longer unconditionally launches the defender - a
+      // crouching guard (blockLow) now genuinely stops it (see the high/low
+      // guard mixup in fighter.js's takeDamage), so a blocked slide just
+      // stops the attacker dead the same as any other blocked attack,
+      // instead of still knocking the guarding defender backward for free.
+      const pushDir = defenderCenterX >= attackerCenterX ? 1 : -1;
+      // Flies out over the knockback state's own duration (see
+      // setKnockbackMotion/jumpOffset in fighter.js) instead of teleporting
+      // straight to the final spot - a real launch-and-land arc, not an
+      // instant snap-then-freeze.
+      defender.setKnockbackMotion(pushDir, SLIDE.knockback);
+    }
     attacker.lastEvent = "slide-hit";
-    shake = Math.max(shake, SHAKE_ON_HIT);
-    flash = Math.max(flash, FLASH_ON_HIT);
-    triggerHitstop(attacker.slideDamage);
-    spawnHitEffects(defender, attacker);
+    // defender.lastComboEnder/comboCount are only ever touched by
+    // takeDamage's real-hit branch (see fighter.js) - they stay at their
+    // pre-hit values (comboEnder false) on the new blocked-by-blockLow path
+    // the same way they already do for checkHit's block-taken case, so this
+    // naturally falls back to plain SHAKE_ON_HIT/no freeze bonus with no
+    // extra gating needed here, same as checkHit.
+    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(attacker.slideDamage, defender.comboCount);
+    // Full claret/impact FX only on a real, unblocked landing - matches
+    // checkHit's own `if (!wasBlocking) spawnHitEffects(...)` gate exactly;
+    // a blocked slide still gets its block sound (defender's own lastEvent
+    // is "block-taken", handled by handleSounds) and the shake/flash above,
+    // same layered feedback an ordinary blocked punch/kick already gets.
+    if (!wasBlocking) spawnHitEffects(defender, attacker);
   }
 
   // Anti-air counter - deliberately does NOT exclude a jumping defender
@@ -622,7 +764,6 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (defender.lastEvent === "perfect-parry") {
       attacker.applyParryStagger();
       playSound("block", { rate: 1.4 });
-      announceBark(defender === p1 ? "p1" : "p2", "PERFECT PARRY!");
     } else {
       attacker.onLandedHit("uppercut");
       if (caughtMidair) {
@@ -631,9 +772,13 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       }
       attacker.lastEvent = "uppercut-hit";
     }
-    shake = Math.max(shake, SHAKE_ON_HIT);
-    flash = Math.max(flash, FLASH_ON_HIT);
-    triggerHitstop(attacker.uppercutDamage);
+    // Same gating as checkHit above - a parried uppercut never touched
+    // defender.comboCount (takeDamage's block branch owns that path
+    // instead), so lastComboEnder/comboCount stay at their pre-hit values
+    // and this correctly falls back to plain SHAKE_ON_HIT/no freeze bonus.
+    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(attacker.uppercutDamage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
     spawnHitEffects(defender, attacker);
   }
 
@@ -657,6 +802,73 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     });
   }
 
+  // One beat of the bolt/rat-rush flurry - shared by the instant-of-contact
+  // opening pulse AND every scheduled follow-up in updateProjectiles' own
+  // pulsesLeft branch below, so there's exactly one place that actually
+  // applies damage/push/FX for this move instead of two copies that could
+  // drift apart. pulseDamage is a fraction of the OLD single-hit total
+  // (p.owner.specialDamage, still the same getter/number every other special
+  // call site uses) - and every pulse after the opening one lands on a
+  // defender who's still genuinely mid-hitstun from the pulse before it, so
+  // takeDamage's own wasChaining check reads it as a real combo continuation
+  // and computeComboDamageScale (fighter.js) is already quietly shrinking
+  // each later pulse's actual damage on its own. At SPECIAL_PULSE_COUNT = 3
+  // that combo decay alone drops the sequence's real total to roughly 83% of
+  // the old one-shot hit (verified live, see the multi-hit special report) -
+  // deliberate, same restraint this codebase already applied rebalancing
+  // slide/uppercut: the payoff for a flurry is the flurry itself (more
+  // hitstop beats, more pushback, a longer stun) rather than a bigger number
+  // than the old single hit.
+  function applySpecialPulse(p, target, isRatRush, isFinalPulse) {
+    const pulseDamage = p.owner.specialDamage / SPECIAL_PULSE_COUNT;
+    target.takeDamage(pulseDamage, p.x, "special");
+    p.owner.onLandedHit("special");
+    // Same dedicated-impact-sound-vs-shared-thud split the old single-hit
+    // version used - just now on every pulse, quieter on the opening/middle
+    // beats and back to full volume on the one that actually ends the
+    // flurry, so the finisher still reads as the loudest moment.
+    if (isRatRush) {
+      p.owner.lastEvent = "special-hit";
+    } else {
+      playSound("boltImpact", { volume: isFinalPulse ? 0.7 : 0.45 });
+    }
+    // SHAKE_ON_SPECIAL/FLASH's own bigger jolt is reserved for the pulse
+    // that ends the sequence - every earlier beat uses the plain per-hit
+    // magnitude instead, so an individual pulse reads as one part of a
+    // flurry rather than three full "special connected" hits back to back.
+    // lastComboEnder (set by takeDamage just above) can still override
+    // either with SHAKE_ON_ENDER/FLASH_ON_ENDER on its own terms - unchanged
+    // from every other hit branch in this file.
+    const baseShake = isFinalPulse ? SHAKE_ON_SPECIAL : SHAKE_ON_HIT;
+    shake = Math.max(shake, target.lastComboEnder ? SHAKE_ON_ENDER : baseShake);
+    flash = Math.max(flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    // Same reasoning as checkBuilderSpecialHit/checkHodlerSpecialHit - a
+    // projectile connecting always registers as a real hit (specials bypass
+    // block/parry), so target.comboCount/lastComboEnder are always
+    // meaningful right here, no gate needed.
+    triggerHitstop(pulseDamage, target.comboCount);
+    // Anchored at the projectile's actual position (the real contact
+    // point), not the caster's - see p.x's own tracking of the target below,
+    // which is what keeps this correct pulse over pulse as the cumulative
+    // push actually moves the target. spawnHitEffects just needs something
+    // with an .x/.state shape; this fakes a minimal "attacker" positioned
+    // exactly where the hit happened - "slide" for the rat rush so the blood
+    // lands at ground height instead of the bolt's head height.
+    spawnHitEffects(target, { x: p.x - BODY_CENTER_OFFSET, state: isRatRush ? "slide" : "special" });
+    // Cumulative push, a bit at a time - see SPECIAL_PULSE_KNOCKBACK's own
+    // comment above for why p.facing (not a live position compare) drives
+    // the direction.
+    target.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, target.x + p.facing * SPECIAL_PULSE_KNOCKBACK));
+    // Big finisher burst only on the pulse that actually ends the sequence -
+    // every pulse already gets its own small hit-spark via spawnHitEffects
+    // above (that's the per-pulse "hit-flash" reaction), so stacking the
+    // bigger energy-burst on every single beat just read as clutter in
+    // testing rather than a flurry building to a finish.
+    if (isFinalPulse) {
+      impacts.push({ x: p.x, y: isRatRush ? GROUND_Y - 20 : p.y, t: 0 });
+    }
+  }
+
   // Runs after both fighters' own update() so a projectile spawned this same
   // frame (via spawnProjectile above) still gets its first move/hit-check
   // immediately rather than sitting a frame behind.
@@ -664,42 +876,67 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const p = projectiles[i];
       const isRatRush = p.kind === "ratrush";
+      const target = p.owner === p1 ? p2 : p1;
+
+      // Already latched onto the target from an earlier tick this same
+      // flight - pulsesLeft only ever counts down (see SPECIAL_PULSE_COUNT's
+      // own comment above for why a renewed hit-radius/dodge check here
+      // would be wrong: the defender is genuinely stunned, not still
+      // dodgeable, same as any other multi-hit fighting-game super). Runs on
+      // a fixed timer instead.
+      if (p.pulsesLeft > 0) {
+        p.t++;
+        // Tracks the target's own (cumulatively pushed-back) position every
+        // tick rather than the projectile's own old flight trajectory, so
+        // the lingering sprite/FX always sits where the defender actually
+        // is by the time the next pulse fires.
+        p.x = target.x + BODY_CENTER_OFFSET;
+        // An opening pulse that was itself the killing blow (or, rare but
+        // possible against a low-health-mult archetype, a later one) ends
+        // the flurry immediately rather than continuing to push/flash a
+        // fighter who's already down.
+        if (target.state === "ko") {
+          projectiles.splice(i, 1);
+          continue;
+        }
+        if (--p.pulseCooldown > 0) continue;
+        p.pulsesLeft--;
+        applySpecialPulse(p, target, isRatRush, p.pulsesLeft === 0);
+        if (p.pulsesLeft <= 0) {
+          projectiles.splice(i, 1);
+        } else {
+          p.pulseCooldown = SPECIAL_PULSE_INTERVAL_FRAMES;
+        }
+        continue;
+      }
+
       p.x += (isRatRush ? RAT_RUSH_SPEED : PROJECTILE_SPEED) * p.facing;
       p.t++;
 
-      const target = p.owner === p1 ? p2 : p1;
       // The bolt flies at head height, so a crouch dodges it same as a
-      // jump. The rat rush is already on the ground - only a jump clears
+      // jump - blockLow ducks under it too, still physically crouching
+      // underneath the guard (same reasoning as checkHit/checkBuilderSpecialHit
+      // above). The rat rush is already on the ground - only a jump clears
       // it, same rule as a slide. Neither is stopped by a raised guard,
-      // matching every other special's "blows straight through block".
-      const dodged = isRatRush ? target.state === "jump" : target.state === "jump" || target.state === "crouch";
+      // matching every other special's "blows straight through block" - this
+      // stays true pulse over pulse too (see applySpecialPulse), since
+      // takeDamage's own kind !== "special" guard on block never changes.
+      const dodged = isRatRush
+        ? target.state === "jump"
+        : target.state === "jump" || target.state === "crouch" || target.state === "blockLow";
       if (!dodged) {
         const targetCenterX = target.x + BODY_CENTER_OFFSET;
         const hitRadius = isRatRush ? RAT_RUSH_HIT_RADIUS : PROJECTILE_HIT_RADIUS;
         if (Math.abs(targetCenterX - p.x) < hitRadius) {
-          target.takeDamage(p.owner.specialDamage, p.x, "special");
-          // The bolt gets its own dedicated magic-impact sound instead of
-          // the generic special-hit thud everything else shares - it's
-          // meant to read as a complete impact on its own, not layer under
-          // the shared sound.
-          if (isRatRush) {
-            p.owner.lastEvent = "special-hit";
-          } else {
-            playSound("boltImpact", { volume: 0.7 });
-          }
-          shake = Math.max(shake, SHAKE_ON_SPECIAL);
-          flash = Math.max(flash, FLASH_ON_HIT);
-          triggerHitstop(p.owner.specialDamage);
-          // Anchored at the projectile's actual position (the real contact
-          // point), not the caster's - the caster may be standing far away
-          // by the time this lands, so their own x would be the wrong place
-          // to burst blood. spawnHitEffects just needs something with an
-          // .x/.state shape; this fakes a minimal "attacker" positioned
-          // exactly where the hit happened - "slide" for the rat rush so the
-          // blood lands at ground height instead of the bolt's head height.
-          spawnHitEffects(target, { x: p.x - BODY_CENTER_OFFSET, state: isRatRush ? "slide" : "special" });
-          impacts.push({ x: p.x, y: isRatRush ? GROUND_Y - 20 : p.y, t: 0 });
-          projectiles.splice(i, 1);
+          // First contact starts the flurry - pulsesLeft counts the beats
+          // still owed AFTER this one, so a count of 1 here (a degenerate
+          // SPECIAL_PULSE_COUNT of 1) correctly reads as the final pulse
+          // immediately and never enters the branch above at all.
+          p.x = targetCenterX;
+          p.pulsesLeft = SPECIAL_PULSE_COUNT - 1;
+          p.pulseCooldown = SPECIAL_PULSE_INTERVAL_FRAMES;
+          applySpecialPulse(p, target, isRatRush, p.pulsesLeft === 0);
+          if (p.pulsesLeft <= 0) projectiles.splice(i, 1);
           continue;
         }
       }
@@ -721,7 +958,11 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (attacker.state !== "specialHigh") return;
     if (attacker.stateT < BUILDER_SPECIAL.activeStart || attacker.stateT > BUILDER_SPECIAL.activeEnd) return;
     if (attacker.hasHit) return;
-    if (defender.state === "crouch" || defender.state === "jump") return;
+    // blockLow is still physically crouching underneath the guard (same
+    // reasoning as checkHit's own crouch/blockLow kick-whiff above) - a
+    // crouching hurtbox ducks this the same way plain crouch always did,
+    // regardless of whether a guard happens to be raised too.
+    if (defender.state === "crouch" || defender.state === "blockLow" || defender.state === "jump") return;
     const attackerCenterX = attacker.x + BODY_CENTER_OFFSET;
     const defenderCenterX = defender.x + BODY_CENTER_OFFSET;
     if (Math.abs(attackerCenterX - defenderCenterX) >= BUILDER_SPECIAL.range) return;
@@ -730,9 +971,12 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     defender.takeDamage(attacker.builderSpecialDamage, attacker.x, "special");
     attacker.onLandedHit("special");
     attacker.lastEvent = "special-hit";
-    shake = Math.max(shake, SHAKE_ON_SPECIAL);
-    flash = Math.max(flash, FLASH_ON_HIT);
-    triggerHitstop(attacker.builderSpecialDamage);
+    // Specials blow straight through block/parry (takeDamage's kind !==
+    // "special" guard), so this always lands as a real hit - comboCount/
+    // lastComboEnder are always meaningful here, no gate needed.
+    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_SPECIAL);
+    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(attacker.builderSpecialDamage, defender.comboCount);
     spawnHitEffects(defender, { x: attacker.x, state: "uppercut" });
   }
 
@@ -755,9 +999,11 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     defender.takeDamage(attacker.hodlerSpecialDamage, attacker.x, "special");
     attacker.onLandedHit("special");
     attacker.lastEvent = "special-hit";
-    shake = Math.max(shake, SHAKE_ON_SPECIAL);
-    flash = Math.max(flash, FLASH_ON_HIT);
-    triggerHitstop(attacker.hodlerSpecialDamage);
+    // Same reasoning as checkBuilderSpecialHit above - specials always land
+    // as a real hit when this branch runs.
+    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_SPECIAL);
+    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(attacker.hodlerSpecialDamage, defender.comboCount);
     spawnHitEffects(defender, { x: attacker.x, state: "kick" });
   }
 
@@ -963,8 +1209,11 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // broke in practice).
     const p1Gamepad = findGamepad();
     const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
-    p1.update(withGamepad(readInput(KEYMAP.p1), p1Gamepad));
-    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), p2Gamepad));
+    // opponent passed through purely for pickPunchState/pickKickState's own
+    // cosmetic pose choice (see fighter.js) - never read for hit detection,
+    // which stays entirely in checkHit/etc below, run after both updates.
+    p1.update(withGamepad(readInput(KEYMAP.p1), p1Gamepad), p2);
+    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), p2Gamepad), p1);
     // The dummy tops back up to full once it's recovered from the last
     // combo (back to idle) rather than sitting there half-dead or at 0 -
     // real hit feedback lands every time (health bar actually drops during
@@ -1004,18 +1253,6 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       p1.facing = -1;
       p2.facing = 1;
     }
-    // Reacts to comboCount's own current value rather than any one hit-check
-    // call site, so it can't miss a hit landed via checkHit/checkUppercutHit/
-    // checkBuilderSpecialHit/checkHodlerSpecialHit/updateSlide/
-    // updateProjectiles - whichever move actually did the chaining.
-    maybeBarkCombo(p1, "p1", "p2");
-    maybeBarkCombo(p2, "p2", "p1");
-    // Bark bubbles age down like every other hitstop-adjacent timer here
-    // (shake/flash/etc) - only in this real-tick branch, never the hitstop
-    // one, so a bark shown right as a hit lands doesn't lose part of its
-    // hang time to the freeze that same hit just triggered.
-    if (barkTimer.p1 > 0 && --barkTimer.p1 <= 0) document.getElementById("taunt-p1").classList.add("hidden");
-    if (barkTimer.p2 > 0 && --barkTimer.p2 <= 0) document.getElementById("taunt-p2").classList.add("hidden");
     handleSounds(p1);
     handleSounds(p2);
     updateHud();
