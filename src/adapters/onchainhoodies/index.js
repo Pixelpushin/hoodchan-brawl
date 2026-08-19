@@ -124,3 +124,16 @@ export function getFreePlayTokenIds(count) {
   }
   return [...pool];
 }
+
+// Not part of the 4 required exports (see ADAPTERS.md) - optional, only
+// called by main.js's cosmetic post-match "verified owner" flourish, and
+// only when it exists (main.js feature-detects with a typeof check) so an
+// adapter with no on-chain component (the template) never needs a stub.
+// Goes straight to the chain, not restApi - a REST API answering "who owns
+// this" is one more thing to trust for a check that's already purely
+// cosmetic; ownerOf() on the actual contract is the one source that can't
+// be spoofed by a compromised/lagging indexer.
+export async function verifyOwnership(tokenId, address) {
+  const owner = await chain.readOwnerOf(tokenId);
+  return owner.toLowerCase() === address.toLowerCase();
+}

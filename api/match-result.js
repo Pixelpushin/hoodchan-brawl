@@ -1,5 +1,13 @@
 const { redisCommand } = require("./_lib/redis");
-const { statsKeys, recentMatchesKey, MAX_TOKEN_ID, isValidAdapterKey, LEGACY_ADAPTER_KEY } = require("./_lib/stats-keys");
+const {
+  statsKeys,
+  recentMatchesKey,
+  rivalryKey,
+  leaderboardKey,
+  MAX_TOKEN_ID,
+  isValidAdapterKey,
+  LEGACY_ADAPTER_KEY,
+} = require("./_lib/stats-keys");
 
 // Recent-match feed is a rolling window, not a full archive - old entries
 // fall off the end via LTRIM rather than growing the list forever.
@@ -50,15 +58,30 @@ module.exports = async (req, res) => {
   const field = result === "win" ? "wins" : "losses";
   const keys = statsKeys(adapterKey, id);
   const recentKey = recentMatchesKey(adapterKey);
+
+  // count stays at index 0 - everything conditional gets appended after it.
+  const writes = [
+    redisCommand("incr", keys[field]),
+    redisCommand(
+      "lpush",
+      recentKey,
+      JSON.stringify({ tokenId: id, opponentTokenId: oppId, result, ts: Date.now() }),
+    ),
+  ];
+  // Solo/practice reports omit opponentTokenId, and a token can't have a
+  // head-to-head record against itself - both leave no valid rivalry pairing.
+  if (oppId !== null && oppId !== id) {
+    const winnerId = result === "win" ? id : oppId;
+    writes.push(redisCommand("hincrby", rivalryKey(adapterKey, id, oppId), String(winnerId), "1"));
+  }
+  // Leaderboard ranks by wins only, so it moves in lockstep with the wins
+  // counter above rather than firing on every result.
+  if (result === "win") {
+    writes.push(redisCommand("zincrby", leaderboardKey(adapterKey), "1", String(id)));
+  }
+
   try {
-    const [count] = await Promise.all([
-      redisCommand("incr", keys[field]),
-      redisCommand(
-        "lpush",
-        recentKey,
-        JSON.stringify({ tokenId: id, opponentTokenId: oppId, result, ts: Date.now() }),
-      ),
-    ]);
+    const [count] = await Promise.all(writes);
     await redisCommand("ltrim", recentKey, "0", String(RECENT_MATCHES_CAP - 1));
     res.status(200).json({ ok: true, tokenId: id, [field]: count });
   } catch (err) {
