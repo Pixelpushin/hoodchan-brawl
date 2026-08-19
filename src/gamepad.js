@@ -30,7 +30,7 @@ const TRIGGER_THRESHOLD = 0.5;
 // stick-up, which read as accidental jumps whenever a player was just
 // tilting the stick to move/crouch - it's its own dedicated button now,
 // same as every other action.
-export const REMAPPABLE_ACTIONS = ["jump", "uppercut", "block", "punch", "kick", "slide", "special"];
+export const REMAPPABLE_ACTIONS = ["jump", "uppercut", "block", "punch", "kick", "slide", "special", "dash"];
 
 const DEFAULT_GAMEPAD_MAP = {
   jump: 6, // LT
@@ -40,6 +40,11 @@ const DEFAULT_GAMEPAD_MAP = {
   kick: 3, // Y / Triangle
   slide: 4, // LB / L1
   special: 5, // RB / R1
+  // L Stick Click - genuinely unused by anything else here (movement reads
+  // the stick's axes, not its click; Select/Start(8/9) are reserved for the
+  // menu overlay, D-pad(12-15) is movement/crouch) and "click the stick to
+  // dash/sprint" is a familiar enough convention on its own.
+  dash: 10, // L Stick Click
 };
 
 // RT (button 7) always works as an alternate special trigger regardless of
@@ -102,6 +107,7 @@ function emptyInput() {
   return {
     left: false, right: false, block: false, crouch: false, jump: false,
     uppercut: false, slide: false, punch: false, kick: false, special: false,
+    dash: false,
   };
 }
 
@@ -167,6 +173,7 @@ export function buildGamepadInput(gp) {
   input.kick = isPressed(gp, map.kick);
   input.slide = isPressed(gp, map.slide);
   input.special = isPressed(gp, map.special) || isPressed(gp, SPECIAL_ALT_BUTTON);
+  input.dash = isPressed(gp, map.dash);
 
   return input;
 }

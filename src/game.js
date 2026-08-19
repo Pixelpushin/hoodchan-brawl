@@ -19,7 +19,18 @@ import {
   HEAD_POP_DURATION,
   GROUND_Y,
 } from "./body.js";
-import { MAX_POWER, SLIDE, UPPERCUT, BUILDER_SPECIAL, HODLER_SPECIAL, ARENA_MIN_X, ARENA_MAX_X, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
+import {
+  MAX_POWER,
+  SLIDE,
+  UPPERCUT,
+  BUILDER_SPECIAL,
+  HODLER_SPECIAL,
+  ARENA_MIN_X,
+  ARENA_MAX_X,
+  CANVAS_WIDTH,
+  CANVAS_HEIGHT,
+  computeHitstopFrames,
+} from "./fighter.js";
 import { playSound } from "./sound.js";
 import { createAIController } from "./ai.js";
 import { speakTaunt } from "./tts.js";
@@ -39,6 +50,7 @@ const KEYMAP = {
     punch: "f",
     kick: "g",
     special: "r",
+    dash: "q",
   },
   p2: {
     left: "arrowleft",
@@ -51,6 +63,7 @@ const KEYMAP = {
     punch: "k",
     kick: "l",
     special: "j",
+    dash: "o",
   },
 };
 
@@ -158,6 +171,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   const emptyP2Input = {
     left: false, right: false, block: false, crouch: false, jump: false,
     uppercut: false, slide: false, punch: false, kick: false, special: false,
+    dash: false,
   };
   const getAIInput = practiceMode ? null : p2AI ? createAIController(p2, p1) : null;
   const pressed = new Set();
@@ -182,6 +196,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       punch: pressed.has(map.punch),
       kick: pressed.has(map.kick),
       special: pressed.has(map.special),
+      dash: pressed.has(map.dash),
     };
   }
 
@@ -211,6 +226,18 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   let roundWinner;
   let shake = 0;
   let flash = 0;
+  // Hitstop - counts down in real frames. While > 0, loop() below takes the
+  // early-return branch that freezes both fighters, projectiles, blood FX,
+  // and the round timer entirely (only input polling for buffer capture and
+  // drawing the current frame still run) - see computeHitstopFrames in
+  // fighter.js for the damage->frames formula and the "if (hitstopFrames >
+  // 0)" branch of loop() for the actual freeze. Set (never just assigned)
+  // via triggerHitstop so multiple hits landing the same frame always keep
+  // the larger of their two freezes rather than one clobbering the other.
+  let hitstopFrames = 0;
+  function triggerHitstop(damage) {
+    hitstopFrames = Math.max(hitstopFrames, computeHitstopFrames(damage));
+  }
   const powerFullFired = { p1: false, p2: false };
   const groundBlood = [];
   const spatters = [];
@@ -347,8 +374,14 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // bursts, hit sparks, and the KO head-pop, all layered in front of both
   // fighters (an impact flash should read clearly at the moment of the hit,
   // unlike groundBlood's floor-level pooling). Ages/fades each on every
-  // call, so this must only be called once per rendered frame.
-  function drawBloodFX() {
+  // call, so this must only be called once per rendered frame - UNLESS
+  // `paused` (true during a hitstop freeze frame, see loop() below), in
+  // which case everything still draws at its current frame but none of the
+  // .t counters advance and nothing expires. Keeps a hit spark from
+  // finishing (and vanishing) partway through the freeze it was itself
+  // triggered by - the whole frozen moment holds on the same frame the hit
+  // actually landed on, same as shake/flash not decaying during hitstop.
+  function drawBloodFX(paused = false) {
     for (let i = splatExtras.length - 1; i >= 0; i--) {
       const s = splatExtras[i];
       if (s.t >= SPLAT_EXTRA_LIFETIME_FRAMES) {
@@ -361,7 +394,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       ctx.globalAlpha = alpha;
       drawBloodSplatExtra(ctx, s.x, s.y, s.variant, s.rotation, s.scale);
       ctx.restore();
-      s.t++;
+      if (!paused) s.t++;
     }
     for (let i = spatters.length - 1; i >= 0; i--) {
       const s = spatters[i];
@@ -371,7 +404,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         continue;
       }
       drawBloodSpatter(ctx, s.x, s.y, spriteFrame, s.rotation);
-      s.t++;
+      if (!paused) s.t++;
     }
     for (let i = impacts.length - 1; i >= 0; i--) {
       const im = impacts[i];
@@ -381,7 +414,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         continue;
       }
       drawEnergyBurst(ctx, im.x, im.y, spriteFrame);
-      im.t++;
+      if (!paused) im.t++;
     }
     for (let i = hitSparks.length - 1; i >= 0; i--) {
       const hs = hitSparks[i];
@@ -391,7 +424,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         continue;
       }
       drawHitSpark(ctx, hs.x, hs.y, spriteFrame);
-      hs.t++;
+      if (!paused) hs.t++;
     }
     for (let i = headPops.length - 1; i >= 0; i--) {
       const p = headPops[i];
@@ -400,7 +433,81 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         continue;
       }
       drawHeadPop(ctx, p.x, p.y, p.t);
-      p.t++;
+      if (!paused) p.t++;
+    }
+  }
+
+  // Combo readout - drawn directly with the 2D context rather than routed
+  // through body.js, since it's plain text over a fighter, not a sprite/FX
+  // asset. Gated on state (hitstun/knockback) rather than just comboCount,
+  // so it disappears the instant the defender actually recovers instead of
+  // lingering with a stale number until their next hit overwrites it - see
+  // takeDamage's wasChaining check for why state alone is a reliable "still
+  // mid-combo" signal. >= 2 only (a single hit isn't a combo, it's just a
+  // hit) matches how every fighting game's own combo counter works.
+  function drawComboCounter(fighter) {
+    if (fighter.comboCount < 2) return;
+    if (fighter.state !== "hitstun" && fighter.state !== "knockback") return;
+    const centerX = fighter.x + BODY_CENTER_OFFSET;
+    ctx.save();
+    ctx.font = "bold 20px sans-serif";
+    ctx.textAlign = "center";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#000";
+    ctx.fillStyle = "#ffd23f";
+    const label = `${fighter.comboCount} HIT COMBO`;
+    ctx.strokeText(label, centerX, HEAD_Y - 30);
+    ctx.fillText(label, centerX, HEAD_Y - 30);
+    ctx.restore();
+  }
+
+  // --- Announcer barks -------------------------------------------------
+  // Reuses the exact same pre-fight taunt bubble + speakTaunt(text) call the
+  // round-intro/victory-quote flow already drives (see main.js's showTaunt
+  // and endRound's own quote handling below) rather than a new overlay or
+  // audio pipeline - these are just mid-fight callouts fired into the same
+  // two elements, at a faster/punchier rate (1.25 vs the pre-fight taunts'
+  // 1.05) since they're quick single-line reactions, not a spoken line the
+  // countdown is holding open for. Unlike the pre-fight taunts, these are
+  // meant to fire repeatedly through a single round.
+  const BARK_BUBBLE_FRAMES = 90;
+  const barkTimer = { p1: 0, p2: 0 };
+  function announceBark(side, text) {
+    const bubbleEl = document.getElementById(side === "p1" ? "taunt-p1" : "taunt-p2");
+    bubbleEl.textContent = text;
+    bubbleEl.classList.remove("hidden");
+    barkTimer[side] = BARK_BUBBLE_FRAMES;
+    // Fire-and-forget - awaiting would stall this frame's render, and
+    // speechSynthesis.speak() already queues back-to-back utterances on its
+    // own rather than clobbering whatever's still playing.
+    speakTaunt(text, { rate: 1.25 });
+  }
+
+  // Tracks the highest comboCount already barked for THIS fighter's CURRENT
+  // streak, not just "have we barked at all" - a combo that keeps growing
+  // (2 -> 3 -> 4) should call out every new milestone, not go silent after
+  // the first. Reset the instant comboCount itself drops back to <= 1
+  // (recovered, or takeDamage started a fresh unrelated count - see its
+  // wasChaining check) so the next real combo starts barking from "DOUBLE
+  // HIT!" again instead of staying silent because some earlier streak this
+  // round already passed that count.
+  const comboBarkState = { p1: 0, p2: 0 };
+  function comboBarkLine(count) {
+    if (count === 2) return "DOUBLE HIT!";
+    if (count === 3) return "TRIPLE HIT!";
+    return `${count} HIT COMBO!`;
+  }
+  // defender is whoever is actually taking the combo (comboCount lives on
+  // them - see takeDamage) but the callout is credited to whoever's LANDING
+  // it, so the bubble shows over the attacker's side of the HUD.
+  function maybeBarkCombo(defender, defenderSide, attackerSide) {
+    if (defender.comboCount <= 1) {
+      comboBarkState[defenderSide] = 0;
+      return;
+    }
+    if (defender.comboCount > comboBarkState[defenderSide]) {
+      comboBarkState[defenderSide] = defender.comboCount;
+      announceBark(attackerSide, comboBarkLine(defender.comboCount));
     }
   }
 
@@ -419,10 +526,22 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       const wasBlocking = defender.state === "block";
       attacker.hasHit = true;
       defender.takeDamage(box.damage, attacker.x, box.kind);
-      attacker.onLandedHit(box.kind);
-      attacker.lastEvent = `${attacker.state}-hit`;
+      // Checked BEFORE onLandedHit/lastEvent below, not after - a parried
+      // swing didn't actually land clean, so the attacker shouldn't get the
+      // usual power-on-hit payout or their normal "punch-hit"/"kick-hit"
+      // sound cue. applyParryStagger below is what actually cuts their
+      // animation off into the punish window instead.
+      if (defender.lastEvent === "perfect-parry") {
+        attacker.applyParryStagger();
+        playSound("block", { rate: 1.4 });
+        announceBark(defender === p1 ? "p1" : "p2", "PERFECT PARRY!");
+      } else {
+        attacker.onLandedHit(box.kind);
+        attacker.lastEvent = `${attacker.state}-hit`;
+      }
       shake = Math.max(shake, SHAKE_ON_HIT);
       flash = Math.max(flash, FLASH_ON_HIT);
+      triggerHitstop(box.damage);
       if (!wasBlocking) spawnHitEffects(defender, attacker);
     }
   }
@@ -454,6 +573,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       attacker.hasHit = true;
       attacker.lastEvent = "slide-stopped";
       shake = Math.max(shake, SHAKE_ON_HIT);
+      triggerHitstop(attacker.slideDamage);
       return;
     }
 
@@ -468,6 +588,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     attacker.lastEvent = "slide-hit";
     shake = Math.max(shake, SHAKE_ON_HIT);
     flash = Math.max(flash, FLASH_ON_HIT);
+    triggerHitstop(attacker.slideDamage);
     spawnHitEffects(defender, attacker);
   }
 
@@ -493,14 +614,26 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     const caughtMidair = defender.state === "jump";
     attacker.hasHit = true;
     defender.takeDamage(attacker.uppercutDamage, attacker.x, "uppercut");
-    attacker.onLandedHit("uppercut");
-    if (caughtMidair) {
-      const pushDir = defenderCenterX >= attackerCenterX ? 1 : -1;
-      defender.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, defender.x + pushDir * UPPERCUT.knockback));
+    // caughtMidair and a perfect parry can never both be true - block (and
+    // so a parry) is only reachable from a grounded state, see update()'s
+    // early jump-state return - but this is still checked the same way
+    // checkHit above does it, so a grounded block turning into a parry gets
+    // the same treatment either way.
+    if (defender.lastEvent === "perfect-parry") {
+      attacker.applyParryStagger();
+      playSound("block", { rate: 1.4 });
+      announceBark(defender === p1 ? "p1" : "p2", "PERFECT PARRY!");
+    } else {
+      attacker.onLandedHit("uppercut");
+      if (caughtMidair) {
+        const pushDir = defenderCenterX >= attackerCenterX ? 1 : -1;
+        defender.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, defender.x + pushDir * UPPERCUT.knockback));
+      }
+      attacker.lastEvent = "uppercut-hit";
     }
-    attacker.lastEvent = "uppercut-hit";
     shake = Math.max(shake, SHAKE_ON_HIT);
     flash = Math.max(flash, FLASH_ON_HIT);
+    triggerHitstop(attacker.uppercutDamage);
     spawnHitEffects(defender, attacker);
   }
 
@@ -556,6 +689,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
           }
           shake = Math.max(shake, SHAKE_ON_SPECIAL);
           flash = Math.max(flash, FLASH_ON_HIT);
+          triggerHitstop(p.owner.specialDamage);
           // Anchored at the projectile's actual position (the real contact
           // point), not the caster's - the caster may be standing far away
           // by the time this lands, so their own x would be the wrong place
@@ -598,6 +732,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     attacker.lastEvent = "special-hit";
     shake = Math.max(shake, SHAKE_ON_SPECIAL);
     flash = Math.max(flash, FLASH_ON_HIT);
+    triggerHitstop(attacker.builderSpecialDamage);
     spawnHitEffects(defender, { x: attacker.x, state: "uppercut" });
   }
 
@@ -622,6 +757,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     attacker.lastEvent = "special-hit";
     shake = Math.max(shake, SHAKE_ON_SPECIAL);
     flash = Math.max(flash, FLASH_ON_HIT);
+    triggerHitstop(attacker.hodlerSpecialDamage);
     spawnHitEffects(defender, { x: attacker.x, state: "kick" });
   }
 
@@ -763,6 +899,61 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       return;
     }
 
+    // Hitstop freeze - the instant a hit landed (see triggerHitstop, called
+    // from every checkHit/updateSlide/checkUppercutHit/checkBuilderSpecialHit/
+    // checkHodlerSpecialHit/updateProjectiles hit branch above), both
+    // fighters, projectiles, blood FX, and the round clock all hold dead
+    // still for a few frames before knockback/hitstun actually starts
+    // playing - `frame` itself doesn't advance and neither does the
+    // once-per-60-frames timer tick below, so hitstop truly doesn't cost the
+    // clock any time. shake/flash are drawn at whatever their current value
+    // is but deliberately NOT decayed here, so the screen holds at the
+    // impact's peak for the whole freeze instead of fading out mid-stop.
+    //
+    // Input is still polled and fed to Fighter.tickInputOnly (edge-detection
+    // + the input buffer only - no state/position change) for whichever
+    // side(s) are human, so a button pressed during the freeze itself still
+    // gets buffered instead of silently vanishing (see INPUT_BUFFER_FRAMES
+    // in fighter.js). The AI side is deliberately skipped entirely here -
+    // getAIInput() advances its own internal think-timer every call, and
+    // calling it on frozen frames would speed up the AI's decision cadence
+    // relative to a human's, which is exactly the kind of timing drift that
+    // could reopen the crouch-exploit fix in ai.js (that fix depends on the
+    // AI's read of `opponent.state` lining up with real elapsed frames).
+    if (hitstopFrames > 0) {
+      hitstopFrames--;
+      const p1Gamepad = findGamepad();
+      const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
+      p1.tickInputOnly(withGamepad(readInput(KEYMAP.p1), p1Gamepad));
+      if (!getAIInput) {
+        p2.tickInputOnly(practiceMode ? emptyP2Input : withGamepad(readInput(KEYMAP.p2), p2Gamepad));
+      }
+
+      ctx.save();
+      if (shake > 0) {
+        ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+      }
+      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
+      drawGroundBlood();
+      drawFighter(ctx, p1, 1);
+      drawFighter(ctx, p2, 2);
+      drawComboCounter(p1);
+      drawComboCounter(p2);
+      for (const p of projectiles) {
+        if (p.kind === "ratrush") {
+          drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
+        } else {
+          drawSurgeBlast(ctx, p.x, p.y, Math.floor(p.t / PROJECTILE_SPRITE_TICKS_PER_FRAME), p.facing);
+        }
+      }
+      drawBloodFX(true);
+      ctx.restore();
+      if (flash > 0) drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, flash);
+
+      if (!stopped) requestAnimationFrame(loop);
+      return;
+    }
+
     frame++;
 
     // Resolved fresh every frame (not cached) so a controller plugged in or
@@ -813,6 +1004,18 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       p1.facing = -1;
       p2.facing = 1;
     }
+    // Reacts to comboCount's own current value rather than any one hit-check
+    // call site, so it can't miss a hit landed via checkHit/checkUppercutHit/
+    // checkBuilderSpecialHit/checkHodlerSpecialHit/updateSlide/
+    // updateProjectiles - whichever move actually did the chaining.
+    maybeBarkCombo(p1, "p1", "p2");
+    maybeBarkCombo(p2, "p2", "p1");
+    // Bark bubbles age down like every other hitstop-adjacent timer here
+    // (shake/flash/etc) - only in this real-tick branch, never the hitstop
+    // one, so a bark shown right as a hit lands doesn't lose part of its
+    // hang time to the freeze that same hit just triggered.
+    if (barkTimer.p1 > 0 && --barkTimer.p1 <= 0) document.getElementById("taunt-p1").classList.add("hidden");
+    if (barkTimer.p2 > 0 && --barkTimer.p2 <= 0) document.getElementById("taunt-p2").classList.add("hidden");
     handleSounds(p1);
     handleSounds(p2);
     updateHud();
@@ -836,6 +1039,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     drawGroundBlood();
     drawFighter(ctx, p1, 1);
     drawFighter(ctx, p2, 2);
+    drawComboCounter(p1);
+    drawComboCounter(p2);
     for (const p of projectiles) {
       if (p.kind === "ratrush") {
         drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
@@ -855,7 +1060,19 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // Practice never ends on its own - see exit-match-btn (main.js) for
     // the only way out, since none of the normal win conditions apply to a
     // dummy that can neither be finished off nor time one out.
-    if (!practiceMode) {
+    //
+    // Gated on hitstopFrames === 0: a killing blow triggers hitstop the
+    // same frame it drops health to 0 (checkHit/etc above run before this),
+    // so without this guard endRound would fire - and `ended` would flip
+    // true - before the freeze this exact hit just queued ever got a chance
+    // to play (loop()'s `if (ended)` branch is checked ahead of the
+    // hitstop branch, so an already-ended round would skip the freeze
+    // entirely next tick). Deferring the win check until hitstop has fully
+    // drained means the KO hit's own freeze plays out first, then the round
+    // ends on the frame right after - so the biggest hits of the match
+    // (the ones that end it) are the ones guaranteed to actually get their
+    // impact pause instead of being cut short.
+    if (!practiceMode && hitstopFrames === 0) {
       if (p1.health <= 0 && p2.health <= 0) endRound(null);
       else if (p1.health <= 0) endRound(p2);
       else if (p2.health <= 0) endRound(p1);

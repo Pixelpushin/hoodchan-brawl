@@ -84,7 +84,9 @@ A lightweight, ambient win/loss record per token ID, plus optional X account lin
 
 - `GET /api/hoodie/{tokenId}/stats?adapter=<key>` - wins/losses/matches for one token
 - `GET /api/matches/recent?limit=25&adapter=<key>` - newest completed matches for one adapter's collection
-- `POST /api/match-result` - called by the game client itself when a match ends, body includes `adapter`
+- `GET /api/leaderboard?limit=10&adapter=<key>` - top fighters by win count for one adapter's collection
+- `GET /api/rivalry/{tokenIdA}/{tokenIdB}?adapter=<key>` - head-to-head win record between two tokens (order doesn't matter)
+- `POST /api/match-result` - called by the game client itself when a match ends, body includes `adapter`; when `opponentTokenId` is present this also updates that pairing's rivalry record and, on a win, the leaderboard
 
 Namespaced per adapter (`adapter` matches that adapter's own `config.key` from `src/adapters/*/index.js`) so two different collections' token #42 never share a record. `adapter` is optional on every route and defaults to `onchainhoodies` - that adapter specifically keeps its original unprefixed Redis keys rather than moving to the new `stats:{adapter}:...` scheme, since hoodies-fight's live deployment already has real accumulated win/loss data under those exact keys (see `api/_lib/stats-keys.js`).
 

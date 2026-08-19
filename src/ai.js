@@ -38,6 +38,7 @@ function emptyInput() {
     punch: false,
     kick: false,
     special: false,
+    dash: false,
   };
 }
 
