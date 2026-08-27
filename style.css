@@ -1641,7 +1641,18 @@ a:focus-visible {
 
 #lobby-close-btn {
   width: 100%;
+  background: transparent;
+  color: #888;
+  border: 1px solid #444;
+  padding: 10px 20px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, border-color 0.15s;
 }
+#lobby-close-btn:hover { color: #e8e8e8; border-color: #666; }
 
 #remote-pvp-btn {
   display: block;
