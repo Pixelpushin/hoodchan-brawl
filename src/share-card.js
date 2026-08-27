@@ -250,13 +250,17 @@ function openXIntent(tweetText) {
 }
 
 // Mobile: native share sheet with image file (gets to Twitter/Discord etc.)
-// Desktop: download the PNG + open X intent in a new tab with precompiled text.
+// Desktop: copy image to clipboard + open X intent. Twitter web intent can't
+// attach images directly (no API for that without OAuth), but with the image
+// already on the clipboard the user just pastes it into the compose box.
+// Returns { clipboardCopied: true } so callers can show a "paste now" hint.
 export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png", title = "HOODCHAN Brawl", text = "I just got a KO in HOODCHAN Brawl!", tweetText } = {}) {
   const blob = await canvasToBlob(canvas);
   if (!blob) return false;
 
   const tweet = tweetText || text;
 
+  // Mobile: native share sheet with image file
   if (isMobileDevice() && navigator.share && navigator.canShare) {
     const file = new File([blob], fileName, { type: "image/png" });
     if (navigator.canShare({ files: [file] })) {
@@ -269,8 +273,27 @@ export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png",
     }
   }
 
-  // Desktop (or mobile share fallback): download image + open X intent.
-  downloadBlob(blob, fileName);
+  // Desktop: try Clipboard API first so the image is ready to paste into the
+  // tweet compose window that's about to open. Falls back to download if the
+  // browser doesn't support it or the user denies clipboard-write permission.
+  let clipboardCopied = false;
+  if (
+    typeof ClipboardItem !== "undefined" &&
+    navigator.clipboard &&
+    typeof navigator.clipboard.write === "function"
+  ) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      clipboardCopied = true;
+    } catch {
+      // Denied or unsupported — fall through to download
+    }
+  }
+
+  if (!clipboardCopied) {
+    downloadBlob(blob, fileName);
+  }
+
   openXIntent(tweet);
-  return true;
+  return { clipboardCopied };
 }

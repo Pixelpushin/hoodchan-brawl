@@ -925,13 +925,23 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
           roundScore: wins,
           winnerCanvas: canvas,
         });
-        await shareKOImage(shareCanvas, {
+        const result = await shareKOImage(shareCanvas, {
           title: `${matchWinner.data.name} won in HOODCHAN Brawl`,
           text: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} in HOODCHAN Brawl!`,
-          tweetText: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\n\nfight.hoodchan.org`,
+          tweetText: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\nfight.hoodchan.org #HoodVsHood #OnChainHoodies`,
         });
+        // If image was copied to clipboard, prompt user to paste it in the
+        // tweet compose window that just opened.
+        if (!cancelled && result && result.clipboardCopied) {
+          shareBtn.disabled = false;
+          shareBtn.textContent = "📋 PASTE IMAGE IN TWEET (Ctrl+V)";
+          setTimeout(() => {
+            if (!cancelled) shareBtn.textContent = "SHARE YOUR WIN";
+          }, 6000);
+          return;
+        }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && shareBtn.textContent !== "📋 PASTE IMAGE IN TWEET (Ctrl+V)") {
           shareBtn.disabled = false;
           shareBtn.textContent = "SHARE YOUR WIN";
         }
@@ -1012,6 +1022,13 @@ async function maybeShowVictoryFlourish(matchWinner, isP1Winner, ctx, verifiedBa
 // this fires.
 const VICTORY_FLASH_FRAMES = 30;
 function flashVictoryScreen(ctx, isCancelled) {
+  // Snapshot the frozen winner frame BEFORE the flash starts. drawFlash
+  // stacks semi-transparent white on top of whatever is already on the canvas
+  // without clearing first — calling it N times accumulates white (after 30
+  // frames at alpha ~0.25 the canvas approaches solid white and stays there).
+  // Restoring the snapshot on every frame lets the flash oscillate cleanly
+  // over the frozen image instead of washing it out permanently.
+  const snapshot = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
   let frame = 0;
   function step() {
     // Bails the instant Play Again/Back is clicked (same cancelled flag
@@ -1020,6 +1037,7 @@ function flashVictoryScreen(ctx, isCancelled) {
     // and painting white flash frames over whatever the NEXT match's own
     // loop is now drawing to this same ctx/canvas.
     if (isCancelled()) return;
+    ctx.putImageData(snapshot, 0, 0);
     const t = frame / VICTORY_FLASH_FRAMES;
     const pulse = Math.abs(Math.sin(t * Math.PI * 2.5));
     drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, pulse * (1 - t) * 0.7);
