@@ -267,15 +267,9 @@ function setHype() {
 }
 setHype();
 
-// Connect Wallet only makes sense to show if a wallet extension actually
-// exists - offering it otherwise just leads to a "no wallet found, install
-// one" error on click. Play Free always stays visible either way; this
-// only ever hides the wallet option, never the free one.
+// Hide the wallet connect area if no wallet extension is present.
 function hideWalletOption() {
-  document.getElementById("wallet-play").classList.add("hidden");
-  // Some hype lines mention bringing your own NFT - not a real option once
-  // the wallet card is gone, so replace whichever one setHype already picked.
-  if (hypeEl) hypeEl.textContent = "Pick two fighters and jump in.";
+  document.getElementById("wallet-area")?.classList.add("hidden");
 }
 
 // No config.chain at all means the active adapter has nothing to check
@@ -726,22 +720,16 @@ async function proceedWithWallet(address, { unlockSound }) {
     if (unlockSound) playSound("uiclick");
 
     if (!tokenIds.length) {
-      walletStatus.textContent = `No ${unitNamePlural} in this wallet yet - grab one and come back swinging.`;
+      walletStatus.textContent = `No ${unitNamePlural} found — hit FIGHT to play free or grab one below.`;
       openseaBtn.classList.remove("hidden");
-      // Not everyone with a wallet wants to buy in just to try it out - this
-      // drops them straight into the same free select-screen flow as
-      // someone with no wallet at all, no NFT required.
-      freePlayBtn.classList.remove("hidden");
       connectWalletBtn.disabled = false;
       return;
     }
 
     openseaBtn.classList.add("hidden");
-    freePlayBtn.classList.add("hidden");
     _walletTokenIds = tokenIds;
     connectWalletBtn.textContent = "✓ CONNECTED";
-    walletStatus.textContent = `${tokenIds.length} ${tokenIds.length === 1 ? unitName : unitNamePlural} found — pick a mode above.`;
-    startBtn.textContent = "FIGHT NOW";
+    walletStatus.textContent = `${tokenIds.length} ${tokenIds.length === 1 ? unitName : unitNamePlural} loaded — hit FIGHT to use them.`;
   } catch (err) {
     walletStatus.textContent = err.message;
     connectWalletBtn.disabled = false;

@@ -77,125 +77,84 @@ h1 {
 #setup-content {
   position: relative;
   z-index: 1;
-  max-width: min(96vw, 1400px);
+  max-width: min(96vw, 520px);
   margin: 0 auto;
   padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
 }
 
-.hype {
-  font-family: "Bungee", "Courier New", monospace;
-  font-size: clamp(16px, 2.4vw, 24px);
-  letter-spacing: 0.04em;
-  color: #ffe066;
-  text-shadow: 0 0 8px #ffe06699;
-  margin: 0 0 20px;
-}
-
-#setup button {
-  padding: 10px 24px;
+/* Big primary FIGHT button */
+#start-btn {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  padding: 18px 40px;
   background: #3ddc3d;
   color: #0b0b0f;
   border: none;
   cursor: pointer;
   font-family: "Bungee", "Courier New", monospace;
-  font-size: 16px;
-  letter-spacing: 0.1em;
-  box-shadow: 0 0 0 2px #0b0b0f, 0 0 12px #3ddc3d88;
-  transition: transform 0.1s ease-out;
+  font-size: clamp(22px, 5vw, 32px);
+  letter-spacing: 0.12em;
+  box-shadow: 0 0 0 3px #0b0b0f, 0 0 24px #3ddc3daa;
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+  margin-bottom: 20px;
 }
+#start-btn:hover { transform: scale(1.04); box-shadow: 0 0 0 3px #0b0b0f, 0 0 36px #3ddc3dcc; }
 
-#setup button:hover {
-  transform: scale(1.05);
-}
-
-#setup button:disabled {
-  background: #444;
-  box-shadow: none;
-  cursor: default;
-  transform: none;
+/* Wallet connect area — secondary, below the fight button */
+#wallet-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  width: 100%;
 }
 
 #connect-wallet-btn {
-  padding: 12px 26px;
+  padding: 10px 22px;
   background: transparent;
   color: #3ddc3d;
   border: 2px solid #3ddc3d;
   cursor: pointer;
   font-family: "Bungee", "Courier New", monospace;
-  font-size: 15px;
-  letter-spacing: 0.03em;
-  box-shadow: 0 0 12px #3ddc3d44;
-  transition: transform 0.1s ease-out;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  box-shadow: 0 0 8px #3ddc3d33;
+  transition: transform 0.1s ease-out, background 0.1s;
 }
-
-#connect-wallet-btn:hover {
-  transform: scale(1.03);
-  background: #3ddc3d22;
-}
-
-#connect-wallet-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-  transform: none;
-}
+#connect-wallet-btn:hover { transform: scale(1.03); background: #3ddc3d22; }
+#connect-wallet-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
 
 #wallet-status {
-  font-size: 15px;
-  color: #d0d0d8;
-  min-height: 1.2em;
-}
-
-#play-options {
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 40px;
-  margin-top: 8px;
-}
-
-.play-option {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  max-width: 320px;
-}
-
-/* A thin divider, not a filled card/box - keeps the two options visually
-   separate without covering the background video behind them. */
-.play-option + .play-option {
-  border-left: 1px solid #3ddc3d33;
-  padding-left: 40px;
-}
-
-.option-desc {
-  margin: 10px 0 0;
   font-size: 13px;
-  line-height: 1.4;
   color: #b8b8c2;
+  text-align: center;
+  min-height: 1.2em;
+  margin: 0;
 }
 
-/* Setup-screen-only entry point (see main.js) - centered under both play
-   cards rather than a corner icon like #controls-info-btn, since that one's
-   deliberately global (useful mid-match too) and this isn't. */
-#leaderboard-btn {
-  display: block;
-  margin: 26px auto 0;
+#opensea-btn {
+  font-size: 12px;
+  color: #ffe066;
+  letter-spacing: 0.04em;
 }
 
-@media (max-width: 640px) {
-  #play-options {
-    flex-direction: column;
-    align-items: center;
-    gap: 24px;
-  }
-  .play-option + .play-option {
-    border-left: none;
-    border-top: 1px solid #3ddc3d33;
-    padding-left: 0;
-    padding-top: 24px;
-  }
+/* Secondary action buttons row */
+#secondary-btns {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+#leaderboard-btn,
+#remote-pvp-btn {
+  margin: 0;
 }
 
 /* Fixed corner chip, not scoped inside #setup - proceedWithWallet moves on

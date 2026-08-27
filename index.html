@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <h1><img src="assets/branding/logo.png" alt="" id="logo-mark" />HOODCHAN BRAWL</h1>
@@ -22,25 +22,19 @@
       <source src="https://lmw5corptayu7cn0.public.blob.vercel-storage.com/hoodchan-setup-bg.mp4" type="video/mp4" />
     </video>
     <div id="setup-content">
-      <p class="hype" id="hype">Choose how you want to play:</p>
-      <div id="play-options">
-        <div class="play-option" id="local-play">
-          <button id="start-btn">PLAY FREE</button>
-          <p class="option-desc">No wallet needed. Pick two fighters and play now.</p>
-        </div>
+      <button id="start-btn">FIGHT</button>
 
-        <div class="play-option" id="wallet-play">
-          <button id="connect-wallet-btn">CONNECT WALLET</button>
-          <p class="option-desc" id="wallet-play-desc">Use your own HOODCHAN NFT to fight.</p>
-          <p id="wallet-status"></p>
-          <a id="opensea-btn" class="hidden" href="https://opensea.io/collection/h00dchan" target="_blank" rel="noopener noreferrer">
-            GET AN ANON ON OPENSEA
-          </a>
-          <button id="free-play-btn" class="hidden">PLAY FREE INSTEAD</button>
-        </div>
+      <div id="wallet-area">
+        <button id="connect-wallet-btn">CONNECT WALLET</button>
+        <p id="wallet-status" id="wallet-play-desc">Connect to use your HOODCHAN NFTs as fighters.</p>
+        <a id="opensea-btn" class="hidden" href="https://opensea.io/collection/h00dchan" target="_blank" rel="noopener noreferrer">GET ONE ON OPENSEA</a>
+        <button id="free-play-btn" class="hidden" style="display:none"></button>
       </div>
-      <button id="leaderboard-btn" class="secondary-btn">🏆 LEADERBOARD</button>
-      <button id="remote-pvp-btn" class="secondary-btn">&#128101; REMOTE PVP</button>
+
+      <div id="secondary-btns">
+        <button id="remote-pvp-btn" class="secondary-btn">&#128101; REMOTE PVP</button>
+        <button id="leaderboard-btn" class="secondary-btn">🏆 LEADERBOARD</button>
+      </div>
 
       <!-- Community bar - unique wallet pairs that have fought on-chain -->
       <div id="community-bar-wrap">
@@ -336,6 +330,6 @@
   <p id="integrity-check"></p>
   <div id="cheat-toast" class="hidden"></div>
 
-  <script type="module" src="src/main.js?v=4"></script>
+  <script type="module" src="src/main.js?v=5"></script>
 </body>
 </html>
