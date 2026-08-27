@@ -234,32 +234,43 @@ function downloadBlob(blob, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Web Share API (navigator.share with a `files` array) is what actually
-// gets a mobile user straight to "share to Twitter/Discord/etc" - most
-// desktop browsers (as of this writing) don't implement it at all, or
-// implement `share` without file support, so canShare({files}) is checked
-// explicitly rather than just feature-detecting `navigator.share` alone.
-export async function shareKOImage(canvas, { fileName = "hood-vs-hood-ko.png", title = "Hood Vs Hood", text = "I just got a KO in Hood Vs Hood!" } = {}) {
+// True on Android/iOS — false on macOS/Windows/Linux desktops.
+// navigator.share on macOS opens the OS share sheet (AirDrop etc.), not
+// Twitter. On desktop we want to open x.com/intent/tweet directly instead.
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function openXIntent(tweetText) {
+  window.open(
+    `https://x.com/intent/tweet?text=${encodeURIComponent(tweetText)}`,
+    "_blank",
+    "noopener,noreferrer",
+  );
+}
+
+// Mobile: native share sheet with image file (gets to Twitter/Discord etc.)
+// Desktop: download the PNG + open X intent in a new tab with precompiled text.
+export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png", title = "HOODCHAN Brawl", text = "I just got a KO in HOODCHAN Brawl!", tweetText } = {}) {
   const blob = await canvasToBlob(canvas);
   if (!blob) return false;
 
-  if (navigator.share && navigator.canShare) {
+  const tweet = tweetText || text;
+
+  if (isMobileDevice() && navigator.share && navigator.canShare) {
     const file = new File([blob], fileName, { type: "image/png" });
     if (navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title, text });
         return true;
       } catch (err) {
-        // AbortError means the user closed the native share sheet on
-        // purpose - silently downloading the file behind them right after
-        // they dismissed it would be a surprising, unwanted side effect,
-        // not a real fallback. Any OTHER failure (e.g. the OS share target
-        // rejecting the file) still falls through to the download below.
         if (err && err.name === "AbortError") return false;
       }
     }
   }
 
+  // Desktop (or mobile share fallback): download image + open X intent.
   downloadBlob(blob, fileName);
+  openXIntent(tweet);
   return true;
 }

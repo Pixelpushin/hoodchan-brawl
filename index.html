@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=4" />
 </head>
 <body>
   <h1><img src="assets/branding/logo.png" alt="" id="logo-mark" />HOODCHAN BRAWL</h1>
@@ -40,6 +40,49 @@
         </div>
       </div>
       <button id="leaderboard-btn" class="secondary-btn">🏆 LEADERBOARD</button>
+      <button id="remote-pvp-btn" class="secondary-btn">&#128101; REMOTE PVP</button>
+
+      <!-- Community bar - unique wallet pairs that have fought on-chain -->
+      <div id="community-bar-wrap">
+        <div id="community-bar-inner">
+          <div id="community-bar-label-row">
+            <span id="community-bar-count">...</span>
+            <span id="community-bar-milestone-label"></span>
+          </div>
+          <div id="community-bar-track">
+            <div id="community-bar-fill"></div>
+          </div>
+          <div id="community-bar-milestones"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote PVP lobby modal -->
+  <div id="lobby-modal" class="hidden">
+    <div id="lobby-panel">
+      <button id="lobby-close-btn" class="panel-close-btn" aria-label="Close">✕</button>
+      <h3 class="panel-heading">REMOTE PVP</h3>
+      <p id="lobby-desc">Connect wallets on both devices. Create a room or join one with a code.</p>
+      <div id="lobby-options">
+        <button id="lobby-create-btn">CREATE ROOM</button>
+        <div class="lobby-divider">or</div>
+        <div id="lobby-join-row">
+          <input id="lobby-code-input" type="text" maxlength="6" placeholder="ROOM CODE" autocomplete="off" spellcheck="false" />
+          <button id="lobby-join-btn">JOIN</button>
+        </div>
+      </div>
+      <div id="lobby-waiting" class="hidden">
+        <p class="lobby-status-text">Share this link with your opponent:</p>
+        <div id="lobby-room-code"></div>
+        <button id="lobby-copy-link-btn" class="secondary-btn">COPY LINK</button>
+        <p class="lobby-status-text" id="lobby-wait-status">Waiting for opponent...</p>
+        <div class="spinner" id="lobby-spinner"></div>
+      </div>
+      <div id="lobby-joined" class="hidden">
+        <p class="lobby-status-text">Joined! Waiting for host to start...</p>
+        <div class="spinner"></div>
+      </div>
     </div>
   </div>
 
@@ -293,6 +336,6 @@
   <p id="integrity-check"></p>
   <div id="cheat-toast" class="hidden"></div>
 
-  <script type="module" src="src/main.js"></script>
+  <script type="module" src="src/main.js?v=4"></script>
 </body>
 </html>

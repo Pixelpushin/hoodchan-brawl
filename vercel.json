@@ -1,5 +1,11 @@
 {
   "buildCommand": "sh scripts/stamp-version.sh",
-  "installCommand": null,
-  "outputDirectory": "."
+  "installCommand": "npm install",
+  "outputDirectory": ".",
+  "crons": [
+    {
+      "path": "/api/mint-cron",
+      "schedule": "* * * * *"
+    }
+  ]
 }

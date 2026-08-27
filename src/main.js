@@ -1,7 +1,9 @@
 import { activeAdapter } from "./adapters/index.js";
 import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
 import { createGame } from "./game.js";
-import { initSound, playSound, playRandomTrack, stopMusic } from "./sound.js";
+import { initSound, playSound, playRandomTrack, stopMusic, getAudioCtx } from "./sound.js";
+import { initLobby, initCommunityBar, lobbyComplete, closeLobby, lobbyRegisterFighter } from "./lobby.js";
+import { showMintCelebration } from "./mint-celebration.js";
 import { pickRandomArena, drawArena, drawFighter, drawFlash } from "./body.js";
 import { speakTaunt } from "./tts.js";
 import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet } from "./wallet.js";
@@ -15,6 +17,28 @@ initGamepadDebugOverlay();
 initGamepadNav();
 
 initBloodCode();
+
+// Community bar — unique wallet pairs that have fought on-chain.
+initCommunityBar();
+
+// PVP lobby state (shared across setup/select/match flow).
+let _pvpMode = false;
+let _pvpRoomCode = null;
+let _pvpSide = null;
+// Wallet token IDs stored here so setup screen stays visible after connect
+// (REMOTE PVP button needs to remain accessible).
+let _walletTokenIds = null;
+
+initLobby({
+  async onMatchReady({ roomCode, side, lobbyState }) {
+    _pvpMode = true;
+    _pvpRoomCode = roomCode;
+    _pvpSide = side;
+    closeLobby();
+    await enterSelectScreen(_walletTokenIds);
+    if (lobbyState?.status === "ready") maybeLaunchPvpMatch();
+  },
+});
 
 // Backing-store pixel density multiplier - see fighter.js's CANVAS_WIDTH/
 // HEIGHT comment for why this exists (CSS's `image-rendering: pixelated`,
@@ -615,10 +639,39 @@ readyBtn.addEventListener("click", async () => {
   // a real user gesture, and this is the closest one we get.
   await initSound();
   playSound("uiclick");
+
+  if (_pvpMode && _pvpRoomCode) {
+    // Remote PVP: register this device's fighter with the lobby, then poll
+    // until the opponent also registers. Poll fires onMatchReady with
+    // status:'ready' which calls maybeLaunchPvpMatch.
+    const data1 = panelState.p1.selectedData;
+    if (!data1) { readyBtn.disabled = false; return; }
+    const address = await getConnectedAccount().catch(() => null);
+    if (!address) { readyBtn.disabled = false; return; }
+    try {
+      await lobbyRegisterFighter({ side: _pvpSide ?? "p1", tokenId: data1.tokenId, walletAddress: address });
+      // Poll result handled by lobby.js onMatchReady → maybeLaunchPvpMatch
+    } catch (err) {
+      console.error("[pvp] register fighter failed", err);
+      readyBtn.disabled = false;
+    }
+    return;
+  }
+
   const data1 = panelState.p1.selectedData;
   const data2 = panelState.p2.selectedData;
   await startMatch(data1, data2, { p2AI: true, practiceMode: practiceToggle.checked });
 });
+
+// Fires when lobby confirms both sides ready. If fighters are already
+// selected on this device, starts immediately. Otherwise the user still
+// needs to pick + click START BATTLE.
+async function maybeLaunchPvpMatch() {
+  const data1 = panelState.p1.selectedData;
+  const data2 = panelState.p2.selectedData;
+  if (!data1 || !data2) return;
+  await startMatch(data1, data2, { p2AI: false, practiceMode: false });
+}
 
 async function startMatch(data1, data2, opts) {
   selectScreen.classList.add("hidden");
@@ -654,7 +707,7 @@ async function startMatch(data1, data2, opts) {
 
 startBtn.addEventListener("click", () => {
   playSound("uiclick");
-  enterSelectScreen(null);
+  enterSelectScreen(_walletTokenIds);
 });
 
 // Shared by both the manual "Connect Wallet" click and the silent
@@ -685,8 +738,10 @@ async function proceedWithWallet(address, { unlockSound }) {
 
     openseaBtn.classList.add("hidden");
     freePlayBtn.classList.add("hidden");
-    walletStatus.textContent = `${tokenIds.length} ${tokenIds.length === 1 ? unitName : unitNamePlural} found - pick your fighter.`;
-    enterSelectScreen(tokenIds);
+    _walletTokenIds = tokenIds;
+    connectWalletBtn.textContent = "✓ CONNECTED";
+    walletStatus.textContent = `${tokenIds.length} ${tokenIds.length === 1 ? unitName : unitNamePlural} found — pick a mode above.`;
+    startBtn.textContent = "FIGHT NOW";
   } catch (err) {
     walletStatus.textContent = err.message;
     connectWalletBtn.disabled = false;
@@ -819,11 +874,25 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
     }
 
     const matchLoser = matchWinner === p1 ? p2 : p1;
-    // p1 is always the human-controlled side today (p2AI is always true -
-    // see startMatch's readyBtn handler) - this is what gates the verified-
-    // owner flourish to "a real player won", not the AI. A future real PvP
-    // lobby would need a genuine per-side "is this a human, and which
-    // wallet" concept instead of this shortcut.
+
+    const winnerId = matchWinner.data.verified ? matchWinner.data.tokenId : null;
+    const loserId = matchLoser.data.verified ? matchLoser.data.tokenId : null;
+    // PVP lobby: lobbyComplete records result + cleans up room atomically.
+    if (_pvpMode && _pvpRoomCode) {
+      lobbyComplete({ roomCode: _pvpRoomCode, winnerId, loserId, p1Score: wins.p1, p2Score: wins.p2, roundsPlayed: roundNum });
+      await showMintCelebration({
+        winnerName: matchWinner.data.name,
+        loserName: matchLoser.data.name,
+        wins,
+        matchCanvas: canvas,
+        audioCtx: getAudioCtx(),
+        walletAddress: getConnectedAccount(),
+      });
+    } else if (winnerId !== null || loserId !== null) {
+      // vs-AI: existing reportMatchResult path (if it exists in this build)
+      if (typeof reportMatchResult === "function") reportMatchResult(winnerId, loserId);
+    }
+
     return showMatchOverActions(p2AI, matchWinner, matchLoser, matchWinner === p1, canvas, ctx, wins);
   }
 }
@@ -869,8 +938,9 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
           winnerCanvas: canvas,
         });
         await shareKOImage(shareCanvas, {
-          title: `${matchWinner.data.name} won in Hood Vs Hood`,
-          text: `${matchWinner.data.name} just won a fight in Hood Vs Hood!`,
+          title: `${matchWinner.data.name} won in HOODCHAN Brawl`,
+          text: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} in HOODCHAN Brawl!`,
+          tweetText: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\n\nfight.hoodchan.org`,
         });
       } finally {
         if (!cancelled) {

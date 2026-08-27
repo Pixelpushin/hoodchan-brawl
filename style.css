@@ -1497,3 +1497,544 @@ a:focus-visible {
 #gamepad-remap-actions button {
   flex: 1;
 }
+
+/* ===== Remote PVP lobby modal ===== */
+
+#lobby-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0b0fcc;
+  backdrop-filter: blur(3px);
+}
+
+#lobby-modal.hidden {
+  display: none;
+}
+
+#lobby-panel {
+  background: #12121a;
+  border: 2px solid #3ddc3d55;
+  border-radius: 8px;
+  padding: 32px 28px 24px;
+  width: min(440px, 90vw);
+  box-shadow: 0 0 40px #3ddc3d22, 0 0 80px #0b0b0f99;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  position: relative;
+  text-align: center;
+}
+
+#lobby-panel .panel-heading {
+  margin: 0;
+  font-size: 22px;
+  color: #3ddc3d;
+  text-shadow: 0 0 10px #3ddc3d99;
+}
+
+#lobby-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #b8b8c2;
+  line-height: 1.5;
+  text-align: center;
+}
+
+#lobby-options {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+#lobby-options button {
+  width: 100%;
+  padding: 12px 24px;
+  background: #3ddc3d;
+  color: #0b0b0f;
+  border: none;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 12px #3ddc3d55;
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+  border-radius: 4px;
+}
+
+#lobby-options button:hover {
+  transform: scale(1.03);
+  box-shadow: 0 0 20px #3ddc3d88;
+}
+
+#lobby-options button:disabled {
+  background: #444;
+  box-shadow: none;
+  cursor: default;
+  transform: none;
+}
+
+.lobby-divider {
+  font-size: 12px;
+  color: #666;
+  letter-spacing: 0.1em;
+}
+
+#lobby-join-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+#lobby-code-input {
+  flex: 1;
+  background: #0b0b0f;
+  border: 2px solid #3ddc3d55;
+  color: #e8e8e8;
+  padding: 10px 14px;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  border-radius: 4px;
+  text-transform: uppercase;
+  outline: none;
+  transition: border-color 0.15s ease-out;
+}
+
+#lobby-code-input::placeholder {
+  color: #555;
+  letter-spacing: 0.06em;
+}
+
+#lobby-code-input:focus {
+  border-color: #3ddc3d;
+  box-shadow: 0 0 10px #3ddc3d44;
+}
+
+#lobby-join-row button {
+  padding: 10px 18px;
+  background: transparent;
+  color: #3ddc3d;
+  border: 2px solid #3ddc3d;
+  cursor: pointer;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  transition: transform 0.1s ease-out, background 0.1s ease-out;
+  white-space: nowrap;
+}
+
+#lobby-join-row button:hover {
+  transform: scale(1.04);
+  background: #3ddc3d22;
+}
+
+#lobby-join-row button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+#lobby-waiting,
+#lobby-joined {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.lobby-status-text {
+  margin: 0;
+  font-size: 13px;
+  color: #b8b8c2;
+  text-align: center;
+  line-height: 1.4;
+}
+
+#lobby-room-code {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(24px, 8vw, 36px);
+  letter-spacing: 0.25em;
+  color: #ffe066;
+  text-shadow: 0 0 12px #ffe066cc, 0 0 30px #ffe06666;
+  background: #0b0b0f;
+  border: 2px solid #ffe06644;
+  border-radius: 6px;
+  padding: 12px 24px;
+  user-select: all;
+  cursor: text;
+}
+
+.lobby-error-text {
+  margin: 0;
+  font-size: 13px;
+  color: #ff6666;
+  text-align: center;
+}
+
+#lobby-close-btn {
+  width: 100%;
+}
+
+#remote-pvp-btn {
+  display: block;
+  margin: 10px auto 0;
+}
+
+/* ===== Community bar ===== */
+
+#community-bar-wrap {
+  margin: 24px auto 0;
+  max-width: 480px;
+  width: 100%;
+}
+
+#community-bar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#community-bar-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: #b8b8c2;
+}
+
+#community-bar-count {
+  font-family: "Bungee", "Courier New", monospace;
+  color: #3ddc3d;
+  text-shadow: 0 0 6px #3ddc3d66;
+}
+
+#community-bar-milestone-label {
+  font-size: 11px;
+  color: #ffe06699;
+  text-align: right;
+}
+
+#community-bar-track {
+  position: relative;
+  width: 100%;
+  height: 10px;
+  background: #1a1a22;
+  border: 1px solid #3ddc3d33;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+#community-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3ddc3d 0%, #ffe066 100%);
+  border-radius: 5px;
+  transition: width 0.6s ease-out;
+  box-shadow: 0 0 8px #3ddc3d55;
+}
+
+#community-bar-fill.bar-full {
+  background: linear-gradient(90deg, #ffe066 0%, #3ddc3d 100%);
+  box-shadow: 0 0 14px #ffe06699;
+}
+
+#community-bar-milestones {
+  position: relative;
+  height: 14px;
+  width: 100%;
+}
+
+.community-bar-marker {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 10px;
+  background: #555;
+  border-radius: 1px;
+  transition: background 0.3s ease-out;
+}
+
+.community-bar-marker.reached {
+  background: #ffe066;
+  box-shadow: 0 0 6px #ffe06699;
+}
+
+.community-bar-marker::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: inherit;
+  box-shadow: inherit;
+}
+
+/* ─── Mint celebration overlay ─────────────────────────────────────────────── */
+
+@keyframes mint-cel-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes mint-cel-slide-up {
+  from { transform: translateY(40px) scale(0.96); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes mint-cel-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes mint-cel-chain-pulse {
+  0%,100% { text-shadow: 0 0 10px #ffe06699, 0 0 30px #ffe06655, 0 0 60px #ff990033; }
+  50%      { text-shadow: 0 0 18px #ffe066cc, 0 0 50px #ffe06699, 0 0 90px #ff990066; }
+}
+@keyframes mint-cel-boom-flash {
+  0%   { box-shadow: inset 0 0 0 rgba(255,224,102,0); }
+  15%  { box-shadow: inset 0 0 80px rgba(255,224,102,0.35); }
+  100% { box-shadow: inset 0 0 0 rgba(255,224,102,0); }
+}
+@keyframes mint-cel-count-pop {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.4); color: #ffe066; }
+  60%  { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+@keyframes mint-cel-rank-pop {
+  0%   { transform: translateY(8px); opacity: 0; }
+  60%  { transform: translateY(-2px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes mint-cel-spark-fly {
+  0%   { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--sx), var(--sy)) scale(0); opacity: 0; }
+}
+@keyframes mint-cel-trophy-in {
+  from { transform: scale(0.85) rotate(-2deg); opacity: 0; }
+  to   { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+@keyframes mint-cel-fuse-glow {
+  0%,100% { filter: drop-shadow(0 0 3px #ffe066) brightness(1); }
+  50%     { filter: drop-shadow(0 0 8px #ff9900) brightness(1.3); }
+}
+@keyframes mint-cel-milestone-pop {
+  0%   { transform: scale(0.8); opacity: 0; }
+  60%  { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.mint-celebration-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: mint-cel-fade-in 0.25s ease-out both;
+}
+.mint-celebration-overlay.mint-celebration-exit {
+  animation: mint-cel-fade-out 0.3s ease-in both;
+}
+
+.mint-celebration-panel {
+  background: #0e0e14;
+  border: 2px solid #ffe066;
+  border-radius: 12px;
+  padding: 28px 24px 24px;
+  max-width: 480px;
+  width: 100%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  animation: mint-cel-slide-up 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  box-shadow: 0 0 40px #ffe06633, 0 4px 40px rgba(0,0,0,0.8);
+  overflow: hidden;
+}
+.mint-celebration-panel.mint-cel-boomed-panel {
+  animation: mint-cel-boom-flash 0.6s ease-out both;
+}
+
+.mint-cel-header { text-align: center; }
+.mint-cel-chain {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(18px, 5vw, 26px);
+  letter-spacing: 0.1em;
+  color: #ffe066;
+  animation: mint-cel-chain-pulse 2s ease-in-out infinite;
+  margin-bottom: 6px;
+}
+.mint-cel-subtitle {
+  font-size: 11px;
+  color: #888;
+  letter-spacing: 0.05em;
+}
+
+.mint-cel-trophy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #07070b;
+  border: 1px solid #222;
+}
+.mint-cel-trophy-loaded {
+  animation: mint-cel-trophy-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.mint-cel-ko-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.mint-cel-bar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mint-cel-bar-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #666;
+  text-transform: uppercase;
+}
+.mint-cel-bar-count {
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: clamp(20px, 5vw, 28px);
+  color: #e8e8e8;
+  letter-spacing: 0.05em;
+  transition: color 0.3s;
+}
+.mint-cel-bar-count.mint-cel-count-pop {
+  animation: mint-cel-count-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mint-cel-bar-track {
+  position: relative;
+  height: 14px;
+  background: #1a1a22;
+  border-radius: 7px;
+  overflow: visible;
+  border: 1px solid #333;
+}
+.mint-cel-bar-fill {
+  height: 100%;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #3ddc3d 0%, #ffe066 85%, #ff9900 100%);
+  position: relative;
+  min-width: 4px;
+  transition: none;
+}
+.mint-cel-bar-fill.mint-cel-burning {
+  animation: mint-cel-fuse-glow 0.3s ease-in-out infinite;
+}
+.mint-cel-bar-fill.mint-cel-boomed {
+  animation: none;
+  filter: none;
+  box-shadow: 0 0 16px #ffe06688;
+}
+
+.mint-cel-fuse-head {
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffe066;
+  box-shadow: 0 0 6px 3px #ffe066, 0 0 14px 6px #ff990088;
+  pointer-events: none;
+}
+
+.mint-cel-sparks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.mint-cel-spark {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #ffe066;
+  pointer-events: none;
+  animation: mint-cel-spark-fly 0.45s ease-out both;
+  box-shadow: 0 0 3px #ff9900;
+}
+
+.mint-cel-rank {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #ffe066;
+  text-align: center;
+  font-weight: 700;
+}
+.mint-cel-rank.hidden { display: none; }
+.mint-cel-rank.mint-cel-rank-pop {
+  animation: mint-cel-rank-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mint-cel-milestone-reached {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: #3ddc3d;
+  text-align: center;
+  font-weight: 700;
+  padding: 6px 10px;
+  border: 1px solid #3ddc3d55;
+  border-radius: 6px;
+  background: #0d1f0d;
+  animation: mint-cel-milestone-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mint-cel-btns {
+  display: flex;
+  gap: 10px;
+}
+.mint-cel-share-btn {
+  flex: 1;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  background: #ffe066;
+  color: #0b0b0f;
+  border: none;
+  border-radius: 6px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.mint-cel-share-btn:hover:not(:disabled) { opacity: 0.88; transform: scale(1.02); }
+.mint-cel-share-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.mint-cel-dismiss-btn {
+  flex: 0 0 auto;
+  font-family: "Bungee", "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  background: transparent;
+  color: #888;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.mint-cel-dismiss-btn:hover { color: #e8e8e8; border-color: #666; }

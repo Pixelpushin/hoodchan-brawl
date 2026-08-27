@@ -117,3 +117,5 @@ export function playRandomTrack({ volume = 0.35 } = {}) {
 export function stopMusic() {
   if (musicEl) musicEl.pause();
 }
+
+export function getAudioCtx() { return ctx; }
