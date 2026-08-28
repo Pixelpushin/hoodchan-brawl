@@ -79,6 +79,8 @@ module.exports = async (req, res) => {
     }
 
     await redisCommand("set", `wallet:${saved.address}:xHandle`, username);
+    // Add to the community set so the ransom-target API can pick random members
+    await redisCommand("sadd", "chan:x-connected-handles", username).catch(() => {});
 
     redirectTo(res, `/?xLinked=${encodeURIComponent(username)}`);
   } catch (err) {
