@@ -63,7 +63,7 @@ const HEAD_POP_IMG = loadImg("assets/fx/head-pop.png");
 export const HEAD_POP_DURATION = 30;
 
 const SHEETS = {
-  idle: { img: loadImg("assets/sprites/idle.png"), frameSize: 78 },
+  idle: { img: loadImg("assets/sprites/boxing_idlestance.png"), frameSize: 78 },
   walk: { img: loadImg("assets/sprites/walk.png"), frameSize: 86 },
   attack: { img: loadImg("assets/sprites/attack.png"), frameSize: 86 },
   kick: { img: loadImg("assets/sprites/kick.png"), frameSize: 86 },
@@ -127,7 +127,7 @@ const SHEETS = {
 // collar covered most of the head. Then nudged +3px x / +2px y after that
 // still sat too far back/high relative to the body art.
 const HEAD_ANCHORS = {
-  idle: [{"x":37.8,"y":-7},{"x":37.8,"y":-7},{"x":37.8,"y":-7},{"x":38.3,"y":-7},{"x":38.8,"y":-7},{"x":38.8,"y":-7},{"x":38.5,"y":-7},{"x":37.8,"y":-7}],
+  idle: [{"x":36.4,"y":-7},{"x":36.4,"y":-7},{"x":36.2,"y":-7},{"x":36.4,"y":-6},{"x":36.4,"y":-6},{"x":36.4,"y":-6},{"x":36.1,"y":-7},{"x":36.4,"y":-7}],
   walk: [{"x":40.9,"y":6},{"x":42.5,"y":5},{"x":41.4,"y":4},{"x":42.1,"y":3},{"x":40.5,"y":5},{"x":40.9,"y":6},{"x":42.2,"y":4},{"x":41.8,"y":3}],
   attack: [{"x":42.0,"y":2},{"x":41.3,"y":1},{"x":40.9,"y":2},{"x":37.0,"y":4},{"x":33.3,"y":1},{"x":47.8,"y":0},{"x":49.8,"y":3},{"x":47.3,"y":2}],
   // Single freeze-frame still now (see ANIMS.kick's comment) - resampled
