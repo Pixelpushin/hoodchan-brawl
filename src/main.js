@@ -11,7 +11,7 @@ import { initBloodCode } from "./blood-code.js";
 import { fetchFighterStats } from "./api.js";
 import { initGamepadDebugOverlay } from "./gamepad.js";
 import { initGamepadNav } from "./gamepad-nav.js";
-import { renderKOShareCard, shareKOImage } from "./share-card.js";
+import { renderKOShareCard, shareKOImage, castKOImage } from "./share-card.js";
 
 initGamepadDebugOverlay();
 initGamepadNav();
@@ -901,12 +901,18 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
     const againBtn = document.getElementById("result-again");
     const backBtn = document.getElementById("result-back");
     const shareBtn = document.getElementById("result-share");
+    const castBtn = document.getElementById("result-cast");
     const verifiedBadge = document.getElementById("result-verified-badge");
     actions.classList.remove("hidden");
     againBtn.classList.toggle("hidden", !p2AI);
     shareBtn.classList.remove("hidden");
     shareBtn.disabled = false;
     shareBtn.textContent = "SHARE YOUR WIN";
+    if (castBtn) {
+      castBtn.classList.remove("hidden");
+      castBtn.disabled = false;
+      castBtn.textContent = "CAST";
+    }
 
     // Flips once cleanup() runs (Play Again/Back clicked) - guards the
     // flourish's own async ownership check and the share button's async
@@ -915,39 +921,78 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
     // (badge, button label) that's moved on to the next round/match.
     let cancelled = false;
 
-    async function onShare() {
-      shareBtn.disabled = true;
-      shareBtn.textContent = "RENDERING…";
-      try {
-        const shareCanvas = await renderKOShareCard({
+    // Cache the rendered canvas and upload result so both buttons (X and Cast)
+    // share a single upload instead of POSTing the PNG twice.
+    let cachedShareCanvas = null;
+    let cachedResult = null; // { shareUrl, farcasterUrl } | { clipboardCopied } | null
+
+    const tweetText = `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\nfight.hoodchan.org #HoodVsHood #OnChainHoodies`;
+    const shareOptions = {
+      title: `${matchWinner.data.name} won in HOODCHAN Brawl`,
+      text: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} in HOODCHAN Brawl!`,
+      tweetText,
+    };
+
+    // Renders and uploads once; subsequent calls return the cached result.
+    async function getOrUploadShareCard() {
+      if (cachedResult !== null) return cachedResult;
+      if (!cachedShareCanvas) {
+        cachedShareCanvas = await renderKOShareCard({
           winnerName: matchWinner.data.name,
           loserName: matchLoser.data.name,
           roundScore: wins,
           winnerCanvas: canvas,
         });
-        const result = await shareKOImage(shareCanvas, {
-          title: `${matchWinner.data.name} won in HOODCHAN Brawl`,
-          text: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} in HOODCHAN Brawl!`,
-          tweetText: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\nfight.hoodchan.org #HoodVsHood #OnChainHoodies`,
-        });
-        // If image was copied to clipboard, prompt user to paste it in the
-        // tweet compose window that just opened.
+      }
+      cachedResult = await shareKOImage(cachedShareCanvas, shareOptions);
+      return cachedResult;
+    }
+
+    async function onShare() {
+      shareBtn.disabled = true;
+      shareBtn.textContent = "UPLOADING…";
+      try {
+        const result = await getOrUploadShareCard();
         if (!cancelled && result && result.clipboardCopied) {
           shareBtn.disabled = false;
-          shareBtn.textContent = "📋 PASTE IMAGE IN TWEET (Ctrl+V)";
+          shareBtn.textContent = "PASTE IMAGE IN TWEET (Ctrl+V)";
           setTimeout(() => {
             if (!cancelled) shareBtn.textContent = "SHARE YOUR WIN";
           }, 6000);
           return;
         }
       } finally {
-        if (!cancelled && shareBtn.textContent !== "📋 PASTE IMAGE IN TWEET (Ctrl+V)") {
+        if (!cancelled && shareBtn.textContent === "UPLOADING…") {
           shareBtn.disabled = false;
           shareBtn.textContent = "SHARE YOUR WIN";
         }
       }
     }
+
+    async function onCast() {
+      if (!castBtn) return;
+      castBtn.disabled = true;
+      castBtn.textContent = "UPLOADING…";
+      try {
+        const result = await getOrUploadShareCard();
+        if (cancelled) return;
+        if (result && result.farcasterUrl) {
+          // Upload succeeded - open pre-built Farcaster intent URL
+          window.open(result.farcasterUrl, "_blank", "noopener,noreferrer");
+        } else {
+          // Fallback: open Farcaster compose with just text (no embed)
+          castKOImage(tweetText, null);
+        }
+      } finally {
+        if (!cancelled) {
+          castBtn.disabled = false;
+          castBtn.textContent = "CAST";
+        }
+      }
+    }
+
     shareBtn.addEventListener("click", onShare);
+    if (castBtn) castBtn.addEventListener("click", onCast);
 
     maybeShowVictoryFlourish(matchWinner, isP1Winner, ctx, verifiedBadge, () => cancelled);
 
@@ -967,6 +1012,10 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
       backBtn.removeEventListener("click", onBack);
       shareBtn.removeEventListener("click", onShare);
       shareBtn.classList.add("hidden");
+      if (castBtn) {
+        castBtn.removeEventListener("click", onCast);
+        castBtn.classList.add("hidden");
+      }
       verifiedBadge.classList.add("hidden");
     }
 

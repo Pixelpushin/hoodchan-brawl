@@ -241,24 +241,65 @@ function isMobileDevice() {
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
-function openXIntent(tweetText) {
+function openXIntent(tweetText, shareUrl) {
+  const params = new URLSearchParams({ text: tweetText });
+  if (shareUrl) params.set("url", shareUrl);
   window.open(
-    `https://x.com/intent/tweet?text=${encodeURIComponent(tweetText)}`,
+    `https://x.com/intent/tweet?${params.toString()}`,
     "_blank",
     "noopener,noreferrer",
   );
 }
 
+function openFarcasterIntent(castText, shareUrl) {
+  const params = new URLSearchParams({ text: castText });
+  if (shareUrl) params.set("embeds[]", shareUrl);
+  window.open(
+    `https://farcaster.xyz/~/compose?${params.toString()}`,
+    "_blank",
+    "noopener,noreferrer",
+  );
+}
+
+// Uploads canvas PNG to Vercel Blob via /api/share-upload and returns the
+// share page URL (/api/share?img=...) that carries the proper OG meta tags.
+// Returns null on failure — callers fall back to the old clipboard/download flow.
+async function uploadShareCard(canvas) {
+  try {
+    const blob = await canvasToBlob(canvas);
+    if (!blob) return null;
+
+    const res = await fetch("/api/share-upload", {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: blob,
+    });
+    if (!res.ok) return null;
+
+    const { url } = await res.json();
+    if (!url) return null;
+
+    // Build the share page URL that carries OG meta tags
+    return `/api/share?img=${encodeURIComponent(url)}`;
+  } catch {
+    return null;
+  }
+}
+
 // Mobile: native share sheet with image file (gets to Twitter/Discord etc.)
-// Desktop: copy image to clipboard + open X intent. Twitter web intent can't
-// attach images directly (no API for that without OAuth), but with the image
-// already on the clipboard the user just pastes it into the compose box.
-// Returns { clipboardCopied: true } so callers can show a "paste now" hint.
+// Desktop: upload PNG to Vercel Blob → get share page URL → open X intent
+// with &url= so X auto-shows the KO card embed (no clipboard/paste needed).
+// Falls back to the old clipboard copy + intent if the upload fails.
+//
+// Returns { shareUrl, farcasterUrl } on desktop success (caller can wire up
+// a separate "Cast" button using farcasterUrl), or { clipboardCopied } on
+// desktop fallback, or true/false on mobile.
 export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png", title = "HOODCHAN Brawl", text = "I just got a KO in HOODCHAN Brawl!", tweetText } = {}) {
   const blob = await canvasToBlob(canvas);
   if (!blob) return false;
 
   const tweet = tweetText || text;
+  const castText = tweetText || text;
 
   // Mobile: native share sheet with image file
   if (isMobileDevice() && navigator.share && navigator.canShare) {
@@ -273,9 +314,25 @@ export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png",
     }
   }
 
-  // Desktop: try Clipboard API first so the image is ready to paste into the
-  // tweet compose window that's about to open. Falls back to download if the
-  // browser doesn't support it or the user denies clipboard-write permission.
+  // Desktop: upload first to get a proper OG share page URL
+  const shareUrl = await uploadShareCard(canvas);
+
+  if (shareUrl) {
+    // Success — open X intent with the share URL (no clipboard/download)
+    openXIntent(tweet, shareUrl);
+    // Build absolute URL for Farcaster (needs full URL for embed unfurling)
+    const absoluteShareUrl = shareUrl.startsWith("http")
+      ? shareUrl
+      : `https://fight.hoodchan.org${shareUrl}`;
+    const farcasterUrl = (() => {
+      const p = new URLSearchParams({ text: castText });
+      p.set("embeds[]", absoluteShareUrl);
+      return `https://farcaster.xyz/~/compose?${p.toString()}`;
+    })();
+    return { shareUrl: absoluteShareUrl, farcasterUrl };
+  }
+
+  // Fallback: upload failed — copy image to clipboard and open X intent without URL
   let clipboardCopied = false;
   if (
     typeof ClipboardItem !== "undefined" &&
@@ -296,4 +353,10 @@ export async function shareKOImage(canvas, { fileName = "hoodchan-brawl-ko.png",
 
   openXIntent(tweet);
   return { clipboardCopied };
+}
+
+// Open Farcaster cast intent with a pre-built URL. Exposed so main.js can
+// wire up the "CAST" button independently using a cached shareUrl.
+export function castKOImage(castText, absoluteShareUrl) {
+  openFarcasterIntent(castText, absoluteShareUrl);
 }
