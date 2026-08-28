@@ -48,17 +48,20 @@ import { findGamepad, buildGamepadInput } from "./gamepad.js";
 
 const KEYMAP = {
   p1: {
+    // WASD movement + JKIL attack scheme (mirrors a controller face layout)
+    // J=punch(X)  K=kick(A)  I=powerKick(Y)  L=special(B)
+    // F=block   Shift=dash   Space=jump   S=crouch   A/D=move
     left: "a",
     right: "d",
-    block: "c",
+    block: "f",
     crouch: "s",
     jump: " ",
-    uppercut: "w",
+    uppercut: "i",
     slide: "e",
-    punch: "f",
-    kick: "g",
-    special: "r",
-    dash: "q",
+    punch: "j",
+    kick: "k",
+    special: "l",
+    dash: "shift",
   },
   p2: {
     left: "arrowleft",
@@ -66,12 +69,12 @@ const KEYMAP = {
     block: "m",
     crouch: "arrowdown",
     jump: "arrowup",
-    uppercut: "i",
-    slide: "u",
-    punch: "k",
-    kick: "l",
-    special: "j",
-    dash: "o",
+    uppercut: "8",
+    slide: "7",
+    punch: "4",
+    kick: "5",
+    special: "6",
+    dash: "9",
   },
 };
 

@@ -18,6 +18,7 @@ Built on [pfp-brawl](https://github.com/Pixelpushin/pfp-brawl), a generalized ve
   - **Hodler** — more health, and their special is a low sweep kick that blocks incoming hits and stops an opponent's slide dead.
   - **Collector** — blocks better, and their special is the long-range bolt.
   - Rare-tier traits (if the active collection has them) add a small health bonus on top.
+- **Controls (keyboard):** `A`/`D` move, `Space` jump, `S` crouch, `F` block, `J` punch (X), `K` kick (A), `I` power kick (Y), `L` special (B), `Shift` dash, `E` slide.
 - Punch is free and builds your power meter slowly; landing hits and successful blocks build it faster. Kick, slide, uppercut, and special all spend power or carry real risk on a whiff.
 - Jump high enough to cross over an opponent; slide low enough to pass under one who jumps. See the in-game controls legend for the full move list.
 
