@@ -186,7 +186,8 @@ export function isComboEnder(comboCount, kind, isKO) {
 // anti-crouch answer instead (see pickPunchState), not a combo beat.
 export const PUNCH_POSES = ["punch", "punchStill", "punch2", "elbow", "downPunch", "groundPunch"];
 export const KICK_POSES = ["kick", "highKick"];
-const PUNCH_CHAIN = ["punch", "punchStill", "punch2", "elbow", "downPunch"];
+// Three-hit combo: punch → punch → elbow, growing impact FX each hit.
+const PUNCH_CHAIN = ["punch", "punch2", "elbow"];
 const KICK_CHAIN = KICK_POSES;
 // Held-pose durations for the new stills, matching each one's own ANIMS
 // entry in body.js exactly (see that file's own comment on where these

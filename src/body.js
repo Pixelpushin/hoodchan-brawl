@@ -65,7 +65,7 @@ export const HEAD_POP_DURATION = 30;
 const SHEETS = {
   idle: { img: loadImg("assets/sprites/boxing_idlestance.png"), frameSize: 78 },
   walk: { img: loadImg("assets/sprites/walk.png"), frameSize: 86 },
-  attack: { img: loadImg("assets/sprites/attack.png"), frameSize: 86 },
+  // attack.png removed — punch now uses the punchStill single-frame sheet.
   kick: { img: loadImg("assets/sprites/kick.png"), frameSize: 86 },
   jump: { img: loadImg("assets/sprites/jump.png"), frameSize: 86 },
   hurt: { img: loadImg("assets/sprites/hurt.png"), frameSize: 78 },
@@ -255,7 +255,7 @@ const ANIMS = {
   // arc than before so a jump can actually clear over the other fighter
   // instead of just hopping in place.
   jump: { sheet: "jump", frames: 8, durationFrames: 48, loop: false },
-  punch: { sheet: "attack", frames: 8, durationFrames: 22, loop: false },
+  punch: { sheet: "punchStill", frames: 1, durationFrames: 14, loop: false },
   // Single freeze-frame still now (see block's comment above for why) -
   // durationFrames kept at 34 to preserve KICK's existing hit-timing, which
   // is driven by fighter.js's own move constants, not by frame count here.
