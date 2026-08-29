@@ -227,7 +227,7 @@ export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, 
           fileName: "hood-vs-hood-soulbound.png",
           title: `${winner} earned a Soulbound token in Hood Vs Hood`,
           text: `${winner} just KO'd ${loser} and minted a soulbound NFT! 🥊⛓`,
-          tweetText: `${winner} just KO'd ${loser} and minted a Soulbound token 🥊⛓\n\nFight your Hoodies: fight.hoodchan.org\n#HoodVsHood #OnChainHoodies`,
+          tweetText: `${winner} just KO'd ${loser} and minted a Soulbound token 🥊⛓\n\nfight.hoodchan.org`,
         });
       } finally {
         shareBtn.disabled = false;

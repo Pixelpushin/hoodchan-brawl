@@ -509,6 +509,18 @@ async function selectFighter(side, tokenId, preview) {
 
   try {
     const data = await activeAdapter.fetchFighterData(tokenId);
+    // Stamp ownerAddress + verified so the post-match mint path knows who
+    // owns this fighter. verifyOwnership is a lightweight on-chain read;
+    // fire-and-forget is fine — if it fails, verified stays false and no
+    // mint is attempted (safe default).
+    const connectedAddr = await getConnectedAccount().catch(() => null);
+    data.ownerAddress = connectedAddr ?? null;
+    data.verified = false;
+    if (connectedAddr && activeAdapter.verifyOwnership) {
+      activeAdapter.verifyOwnership(tokenId, connectedAddr)
+        .then((ok) => { if (ok) data.verified = true; })
+        .catch(() => {});
+    }
     panelState[side].selectedData = data;
     portraits[side].setHead(data.imageUrl);
     updateReadyState();
@@ -877,8 +889,33 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
         walletAddress: getConnectedAccount(),
       });
     } else if (winnerId !== null || loserId !== null) {
-      // vs-AI: existing reportMatchResult path (if it exists in this build)
+      // vs-AI: record stats + enqueue soulbound mint for both verified fighters
       if (typeof reportMatchResult === "function") reportMatchResult(winnerId, loserId);
+      // Mint only when both fighters are verified NFTs owned by real wallets
+      const p1Wallet = p1.data.verified ? p1.data.ownerAddress : null;
+      const p2Wallet = p2.data.verified ? p2.data.ownerAddress : null;
+      if (p1Wallet && p2Wallet && p1.data.tokenId != null && p2.data.tokenId != null) {
+        fetch("/api/ai-match-complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            wallet1: p1Wallet,
+            nft1: p1.data.tokenId,
+            wallet2: p2Wallet,
+            nft2: p2.data.tokenId,
+            winnerId,
+            adapter: "hoodchan",
+          }),
+        }).catch(() => {});
+        await showMintCelebration({
+          winnerName: matchWinner.data.name,
+          loserName: matchLoser.data.name,
+          wins,
+          matchCanvas: canvas,
+          audioCtx: getAudioCtx(),
+          walletAddress: getConnectedAccount(),
+        });
+      }
     }
 
     return showMatchOverActions(p2AI, matchWinner, matchLoser, matchWinner === p1, canvas, ctx, wins);
@@ -926,7 +963,7 @@ function showMatchOverActions(p2AI, matchWinner, matchLoser, isP1Winner, canvas,
     let cachedShareCanvas = null;
     let cachedResult = null; // { shareUrl, farcasterUrl } | { clipboardCopied } | null
 
-    const tweetText = `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\nfight.hoodchan.org #HoodVsHood #OnChainHoodies`;
+    const tweetText = `${matchWinner.data.name} just KO'd ${matchLoser.data.name} 🥊\nfight.hoodchan.org`;
     const shareOptions = {
       title: `${matchWinner.data.name} won in HOODCHAN Brawl`,
       text: `${matchWinner.data.name} just KO'd ${matchLoser.data.name} in HOODCHAN Brawl!`,
