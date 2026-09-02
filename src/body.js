@@ -219,6 +219,10 @@ const HEAD_ANCHORS = {
   // sits low enough each frame that it never hijacks the topmost-row scan,
   // so no restriction was needed here, just the standard correction.
   boxingIdle: [{"x":36.4,"y":-7},{"x":36.4,"y":-7},{"x":36.2,"y":-7},{"x":36.4,"y":-6},{"x":36.4,"y":-6},{"x":36.4,"y":-6},{"x":36.1,"y":-7},{"x":36.4,"y":-7}],
+  // Free crouch kick (fighter.js's KICK_POSES/CHAIN_RESET_FRAMES neighbor,
+  // the "crouchKick" state) reuses the standing "kick" sheet wholesale - no
+  // dedicated low-kick art yet, see ANIMS.crouchKick's own comment below.
+  crouchKick: [{"x":22.2,"y":1.0}],
 };
 
 // Head art is always drawn upright by default (fine for every standing/
@@ -311,6 +315,12 @@ const ANIMS = {
   // Full 8-frame looping alternate idle/guard stance - structurally
   // identical to idle's own entry above, just a different sheet.
   boxingIdle: { sheet: "boxingIdle", frames: 8, cyclesPerSec: 1.1, loop: true },
+  // Free, always-available crouch kick (fighter.js's "crouchKick" state) -
+  // reuses the standing "kick" sheet since there's no dedicated low-kick art
+  // yet (see fighter.js's POSE_DURATIONS.crouchKick comment). A real, if
+  // placeholder, art choice rather than blocking the mechanic on art that
+  // doesn't exist - swap the sheet key here once real low-kick art lands.
+  crouchKick: { sheet: "kick", frames: 1, durationFrames: 20, loop: false },
 };
 
 const TINTS = {

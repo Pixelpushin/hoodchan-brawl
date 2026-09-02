@@ -693,14 +693,20 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // ALSO deliberately doesn't carry it - that's the one attack in this
     // engine meant to reach an airborne target.
     if (isAirborne(defender.state)) return;
-    // Ducking clears kicks clean over the top - punches still connect
-    // through a crouch, only the low kick whiffs. blockLow (crouch+block
-    // held together - see fighter.js's update()) is still physically
-    // crouching underneath the guard, so a kick ducks clean under it the
-    // exact same way - the high/low guard mixup in takeDamage is about
-    // whether a raised guard STOPS a hit that would otherwise land, not
-    // about what a crouching hurtbox already dodges regardless of guard.
-    if ((defender.state === "crouch" || defender.state === "blockLow") && box.kind === "kick") return;
+    // Ducking clears a STANDING kick clean over the top - punches still
+    // connect through a crouch, only the standing kick whiffs. blockLow
+    // (crouch+block held together - see fighter.js's update()) is still
+    // physically crouching underneath the guard, so a standing kick ducks
+    // clean under it the exact same way - the high/low guard mixup in
+    // takeDamage is about whether a raised guard STOPS a hit that would
+    // otherwise land, not about what a crouching hurtbox already dodges
+    // regardless of guard. "attacker.state !== 'crouchKick'" excludes the
+    // one deliberate exception: a LOW kick is thrown from the exact same
+    // crouched profile it's meant to threaten, so unlike every standing
+    // kick pose it should still connect against a crouching/blockLow
+    // defender - that's the entire point of it existing as its own move
+    // instead of just another standing-chain hit.
+    if ((defender.state === "crouch" || defender.state === "blockLow") && box.kind === "kick" && attacker.state !== "crouchKick") return;
     const lo = Math.min(box.from, box.to);
     const hi = Math.max(box.from, box.to);
     if (defender.x >= lo && defender.x <= hi) {
@@ -1516,9 +1522,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // broke in practice).
     const p1Gamepad = findGamepad();
     const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
-    // opponent passed through purely for pickPunchState/pickKickState's own
-    // cosmetic pose choice (see fighter.js) - never read for hit detection,
-    // which stays entirely in checkHit/etc below, run after both updates.
+    // opponent passed through purely for the standing punch chain's
+    // anti-crouch groundPunch check and pickAirAttackState's own cosmetic
+    // pose choice (see fighter.js) - never read for hit detection, which
+    // stays entirely in checkHit/etc below, run after both updates.
     p1.update(withGamepad(readInput(KEYMAP.p1), p1Gamepad), p2);
     p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), p2Gamepad), p1);
     // The dummy tops back up to full once it's recovered from the last

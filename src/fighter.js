@@ -181,14 +181,31 @@ export function isComboEnder(comboCount, kind, isKO) {
 // combo goes deeper. PUNCH_POSES/KICK_POSES are the full set of states that
 // count as that kind of attack for hitbox/sound classification (see
 // attackHitbox and handleSounds' fix in game.js) - PUNCH_CHAIN is the
-// (smaller, ordered) subset actually cycled through by pickPunchState below;
-// groundPunch is deliberately left out of the cycle - it's a dedicated
-// anti-crouch answer instead (see pickPunchState), not a combo beat.
+// (smaller, ordered) subset actually cycled through by enterPunchChain
+// below; groundPunch/crouchKick are deliberately left out of their own
+// chains - they're dedicated anti-crouch/free-crouch-poke answers instead
+// (see the neutral input branch in update()), not combo beats.
 export const PUNCH_POSES = ["punch", "punchStill", "punch2", "elbow", "downPunch", "groundPunch"];
-export const KICK_POSES = ["kick", "highKick"];
+export const KICK_POSES = ["kick", "highKick", "crouchKick"];
 // Three-hit combo: punch → punch → elbow, growing impact FX each hit.
 const PUNCH_CHAIN = ["punch", "punch2", "elbow"];
-const KICK_CHAIN = KICK_POSES;
+// Two-hit combo: kick → highKick. KICK_POSES also includes "crouchKick"
+// (the free crouch poke below), which is deliberately NOT part of this
+// standing chain - same reasoning groundPunch is excluded from PUNCH_CHAIN.
+const KICK_CHAIN = ["kick", "highKick"];
+// How many real ticks a finished chain hit stays "continuable" before the
+// next punch/kick press has to restart the chain at hit 1 instead of
+// picking up where it left off - long enough to cover a landed hit's
+// hitstop+hitstun window plus a normal-speed follow-up press, short enough
+// that a genuinely late, disconnected press reads as a fresh opener rather
+// than a stale continuation.
+const CHAIN_RESET_FRAMES = 30;
+// Every hit of a chain is free EXCEPT the last one - that's the only point
+// either chain costs anything at all, and even then it's a small flat tax,
+// not anywhere near the old single-move KICK.cost (20). Landing all the way
+// through a chain unblocked should read as "you earned it", not "you paid
+// for every swing".
+const CHAIN_FINISHER_COST = 8;
 // Held-pose durations for the new stills, matching each one's own ANIMS
 // entry in body.js exactly (see that file's own comment on where these
 // numbers came from) - kept here too since fighter.js's own state-duration
@@ -203,6 +220,10 @@ const POSE_DURATIONS = {
   groundPunch: 18,
   kick: KICK.duration,
   highKick: 18,
+  // Free crouch kick - reuses the standing "kick" sheet (see body.js's
+  // ANIMS.crouchKick) since there's no dedicated low-kick art yet; a
+  // shorter hold than the full standing kick so it reads as a quick poke.
+  crouchKick: 20,
 };
 
 // Tall/long enough that the arc actually clears over the other fighter's
@@ -565,17 +586,13 @@ export const AIR_SPECIAL = { damage: 14, cost: 30 };
 // CANCEL into itself to skip that recovery, which is exactly what would
 // turn mashing into a free accelerating string.
 //
-// One interaction worth flagging rather than "fixing": a kick reached via a
-// punch->kick cancel almost always resolves to a later PUNCH_CHAIN/
-// KICK_CHAIN pose (see pickKickState below - opponent is already mid-hitstun
-// by the time the cancel fires, so its own chain-depth logic picks
-// "highKick", not the base "kick" pose) whose own (shorter) POSE_DURATIONS
-// entry ends before KICK's own cancel window below is ever reached - so a
-// punch->kick->uppercut three-deep cancel isn't reachable through this same
-// mechanism. kick->uppercut and slide->uppercut both work exactly as
-// documented when kick/slide is the STRING'S OWN OPENER (thrown fresh from
-// neutral, so pickKickState's chain-depth read is 0 and the base "kick"
-// pose - full duration, real window - is what actually plays).
+// A kick reached via a punch->kick cancel always resolves to a FRESH kick
+// chain (enterKickChain(0), the base "kick" pose - see that method's own
+// comment) rather than picking up mid-kick-chain from nowhere, so it gets
+// the base pose's own full duration and real cancel window same as any
+// other freshly-opened kick - a punch->kick->uppercut three-deep cancel is
+// reachable through this same mechanism, same as kick->uppercut/
+// slide->uppercut already are when kick/slide is the string's own opener.
 const CANCEL_ROUTES = {
   punch: ["uppercut", "kick"],
   kick: ["uppercut"],
@@ -793,14 +810,19 @@ export class Fighter {
     // hits in a row with no gap" counter this file already used for damage
     // scaling/FX tiers and keeps being fed by every kind of chained hit
     // (grounded or airborne), not just juggle ones.
-    // Straight round-robin over KICK_CHAIN, incremented on every kick throw
-    // regardless of whether it lands or the opponent is mid-combo - unlike
-    // pickPunchState's depth (which reads the OPPONENT's comboCount, so
-    // punch2/elbow only show up while actively chaining hits), kick has no
-    // anti-crouch variant to gate around, so there's no reason to hide
-    // highKick behind a landed-combo requirement: every other kick just
-    // alternates kick/highKick/kick/highKick on its own.
-    this.kickThrowCount = 0;
+    // Punch/kick chain bookkeeping - see PUNCH_CHAIN/KICK_CHAIN/
+    // enterPunchChain/enterKickChain above/below. *ChainIndex is which hit of
+    // the chain is either currently playing or was most recently completed;
+    // *ChainResetT is a real per-fighter countdown (decremented once per
+    // real update() tick, see CHAIN_RESET_FRAMES's own comment) that gates
+    // whether the NEXT press continues the chain (still > 0) or restarts it
+    // fresh at hit 1 (expired) - own throw count, not the opponent's combo
+    // state, so both chains build up purely off repeated presses landing or
+    // not, same as a real fighting-game target combo.
+    this.punchChainIndex = 0;
+    this.punchChainResetT = 0;
+    this.kickChainIndex = 0;
+    this.kickChainResetT = 0;
     this.juggleY = 0;
     this.juggleVY = 0;
     this.juggleHits = 0;
@@ -985,11 +1007,11 @@ export class Fighter {
   }
 
   // opponent (optional - callers with no opponent concept, if any ever show
-  // up, still work fine) is ONLY used cosmetically, to pick which punch/kick
-  // pose to display (see pickPunchState/pickKickState below) - it never
-  // affects hit detection, damage, or state timing, all of which stay
-  // exactly the caller's own responsibility via attackHitbox()/checkHit
-  // (game.js) same as before.
+  // up, still work fine) is used for two purely cosmetic reads: the
+  // anti-crouch groundPunch check in the standing punch chain below, and
+  // pickAirAttackState further down - it never affects hit detection,
+  // damage, or state timing, all of which stay exactly the caller's own
+  // responsibility via attackHitbox()/checkHit (game.js) same as before.
   update(input, opponent) {
     this.lastEvent = null;
     this.lastComboEnder = false;
@@ -1008,6 +1030,14 @@ export class Fighter {
     }
 
     this.stateT++;
+    // Real per-tick countdown, not tied to any state's own stateT - see
+    // CHAIN_RESET_FRAMES/punchChainResetT's own comments above. Ages down
+    // every real tick regardless of what state this fighter is in
+    // (including hitstun/knockback/etc, not just while mid-chain), same
+    // "measured against real elapsed frames" convention the input buffer
+    // above already uses.
+    if (this.punchChainResetT > 0) this.punchChainResetT--;
+    if (this.kickChainResetT > 0) this.kickChainResetT--;
 
     // Power slowly refills on its own except while kicking - jump is free
     // (it's the dodge tool, including for the ranged special, so it can't be
@@ -1184,7 +1214,10 @@ export class Fighter {
           // out on its own normal INPUT_BUFFER_FRAMES timer.
           if (CANCEL_ROUTES[cancelFamily].includes("kick") && (justPressed.kick || this.hasBuffered("kick"))) {
             this.consumeBuffered("kick");
-            this.setState(this.pickKickState(opponent));
+            // Always a FRESH kick chain (idx 0), never mid-chain here - a
+            // punch cancel into kick is a mixed-string opener, not a
+            // continuation of some earlier kick string.
+            this.enterKickChain(0);
             return;
           }
         }
@@ -1378,57 +1411,89 @@ export class Fighter {
       this.lastEvent = "slide-start";
       return;
     }
-    if (justPressed.punch || this.consumeBuffered("punch")) {
-      this.setState(this.pickPunchState(opponent));
+    // Crouching punch/kick - free, always-available low pokes, checked
+    // BEFORE the standing chains below (same input-priority pattern the
+    // crouching-guard branch above already uses: holding a modifier changes
+    // what a following press does). Neither touches punchChainIndex/
+    // kickChainIndex or their reset timers at all, so ducking mid-standing-
+    // chain to throw one doesn't disturb the chain's own sequencing - it
+    // simply keeps whatever reset window was already running.
+    if (input.crouch && justPressed.punch) {
+      this.setState("downPunch");
       return;
     }
-    if (justPressed.kick || this.hasBuffered("kick")) {
-      this.consumeBuffered("kick");
-      this.setState(this.pickKickState(opponent));
+    if (input.crouch && justPressed.kick) {
+      this.setState("crouchKick");
       return;
+    }
+    // Standing punch chain - see PUNCH_CHAIN/enterPunchChain/
+    // punchChainResetT above for the full design. A fresh press either
+    // continues the chain (still within its post-hit reset window AND not
+    // already at the ender) or restarts it fresh at hit 1 - explicit
+    // restart rather than any wraparound, so "one press past the ender"
+    // always reads the same way regardless of exactly how much of the reset
+    // window was left. Every hit is free except the chain's own last one
+    // (CHAIN_FINISHER_COST) - an unaffordable finisher press stays queued
+    // (hasBuffered, not an unconditional consume) to retry next tick rather
+    // than being eaten for nothing, same pattern every other power-gated
+    // action in this file already follows.
+    if (justPressed.punch || this.hasBuffered("punch")) {
+      // Every punch already connects through a crouch (see checkHit in
+      // game.js - only kick is ducked) - groundPunch is purely a themed
+      // "aimed low" answer to a turtling crouch, not a new way to beat it
+      // mechanically, and deliberately doesn't touch the chain index at all
+      // (same as crouchPunch/crouchKick above).
+      if (opponent && (opponent.state === "crouch" || opponent.state === "blockLow")) {
+        this.consumeBuffered("punch");
+        this.setState("groundPunch");
+        return;
+      }
+      const idx = this.punchChainResetT > 0 && this.punchChainIndex < PUNCH_CHAIN.length - 1 ? this.punchChainIndex + 1 : 0;
+      const cost = idx === PUNCH_CHAIN.length - 1 ? CHAIN_FINISHER_COST : 0;
+      if (this.power >= cost) {
+        this.consumeBuffered("punch");
+        if (cost > 0) this.spendPower(cost);
+        this.enterPunchChain(idx);
+        return;
+      }
+    }
+    // Standing kick chain - exact same shape as the punch chain just above,
+    // reading KICK_CHAIN/kickChainIndex/kickChainResetT instead.
+    if (justPressed.kick || this.hasBuffered("kick")) {
+      const idx = this.kickChainResetT > 0 && this.kickChainIndex < KICK_CHAIN.length - 1 ? this.kickChainIndex + 1 : 0;
+      const cost = idx === KICK_CHAIN.length - 1 ? CHAIN_FINISHER_COST : 0;
+      if (this.power >= cost) {
+        this.consumeBuffered("kick");
+        if (cost > 0) this.spendPower(cost);
+        this.enterKickChain(idx);
+        return;
+      }
     }
 
     const vx = this.applyMove(input);
     this.state = vx !== 0 ? "walk" : "idle";
   }
 
-  // Which punch pose to throw next - see the PUNCH_CHAIN comment above for
-  // the full reasoning. Depth is read off the OPPONENT's own comboCount, not
-  // a separately-tracked press counter on this fighter, and only while the
-  // opponent is actually still chain-locked (hitstun/knockback - the exact
-  // same "wasChaining" condition takeDamage itself uses below) - a punch
-  // thrown after the opponent has already recovered back to neutral is a
-  // fresh opener, not hit #3 of a string that already ended, even if this
-  // fighter has thrown three punches in a row without any of the later ones
-  // actually landing consecutively.
-  pickPunchState(opponent) {
-    // Every punch already connects through a crouch (see checkHit in
-    // game.js - only kick is ducked) - groundPunch is purely a themed
-    // "aimed low" answer to a turtling crouch, not a new way to beat it
-    // mechanically. Checked first and unconditionally (not folded into the
-    // chain-depth cycle below) since a crouching opponent can never
-    // simultaneously be mid-hitstun-chain - the two states are mutually
-    // exclusive - so there's no ordering ambiguity between this and the
-    // depth check.
-    // blockLow is still a crouching profile underneath the guard - same
-    // themed "aimed low" answer applies there too, cosmetics only (the real
-    // hit is still a plain "punch" per PUNCH_POSES/attackHitbox either way,
-    // and whether it actually connects or gets chip-blocked is takeDamage's
-    // call, not this one's).
-    if (opponent && (opponent.state === "crouch" || opponent.state === "blockLow")) return "groundPunch";
-    const chaining = opponent && (opponent.state === "hitstun" || opponent.state === "knockback");
-    const depth = chaining ? opponent.comboCount : 0;
-    return PUNCH_CHAIN[depth % PUNCH_CHAIN.length];
+  // SINGLE SOURCE OF TRUTH for the standing punch chain. Punch has no
+  // incoming cancel route today (see CANCEL_ROUTES) so the neutral entry
+  // point above is currently the only caller, but this stays a real method
+  // (not inlined there) so that keeps being true if a future pass adds one -
+  // same reasoning enterKickChain below has two real callers already.
+  enterPunchChain(idx) {
+    this.punchChainIndex = idx;
+    this.punchChainResetT = POSE_DURATIONS[PUNCH_CHAIN[idx]] + CHAIN_RESET_FRAMES;
+    this.setState(PUNCH_CHAIN[idx]);
   }
 
-  // Unlike pickPunchState, this doesn't read the opponent's combo state at
-  // all - see kickThrowCount's own constructor comment for why kick just
-  // alternates on its own throw count instead of only varying while
-  // actively chaining a landed combo.
-  pickKickState() {
-    const pose = KICK_CHAIN[this.kickThrowCount % KICK_CHAIN.length];
-    this.kickThrowCount++;
-    return pose;
+  // SINGLE SOURCE OF TRUTH for the standing kick chain - exact same shape as
+  // enterPunchChain above. Both the neutral entry point and the punch->kick
+  // cancel route in update()'s cancel-check block call this same method, so
+  // kickChainIndex can never desync from this.state no matter which door a
+  // chain hit comes through.
+  enterKickChain(idx) {
+    this.kickChainIndex = idx;
+    this.kickChainResetT = POSE_DURATIONS[KICK_CHAIN[idx]] + CHAIN_RESET_FRAMES;
+    this.setState(KICK_CHAIN[idx]);
   }
 
   // Which of the two identically-statted aerial poses to throw - purely
