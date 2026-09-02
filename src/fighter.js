@@ -43,7 +43,7 @@ export const ARENA_MAX_X = 625;
 // connected while the actual hitbox (checkHit in game.js) missed and no
 // damage registered. Bumped well past that bare-minimum margin instead.
 const PUNCH = { duration: 22, activeStart: 6, activeEnd: 14, damage: 6, range: 90 };
-const KICK = { duration: 34, activeStart: 10, activeEnd: 22, damage: 10, range: 84, cost: 20 };
+const KICK = { duration: 34, activeStart: 10, activeEnd: 22, damage: 10, range: 84 };
 // Ranged, not a melee hitbox - the cast animation plays out over `release`
 // frames, then game.js reads "special-release" off lastEvent and spawns a
 // projectile of its own that travels and hits independently. `duration`
@@ -793,6 +793,14 @@ export class Fighter {
     // hits in a row with no gap" counter this file already used for damage
     // scaling/FX tiers and keeps being fed by every kind of chained hit
     // (grounded or airborne), not just juggle ones.
+    // Straight round-robin over KICK_CHAIN, incremented on every kick throw
+    // regardless of whether it lands or the opponent is mid-combo - unlike
+    // pickPunchState's depth (which reads the OPPONENT's comboCount, so
+    // punch2/elbow only show up while actively chaining hits), kick has no
+    // anti-crouch variant to gate around, so there's no reason to hide
+    // highKick behind a landed-combo requirement: every other kick just
+    // alternates kick/highKick/kick/highKick on its own.
+    this.kickThrowCount = 0;
     this.juggleY = 0;
     this.juggleVY = 0;
     this.juggleHits = 0;
@@ -1174,9 +1182,8 @@ export class Fighter {
           // the input isn't queued or retried forever, it's simply not
           // honored this frame - the buffer (if anything's in it) just ages
           // out on its own normal INPUT_BUFFER_FRAMES timer.
-          if (CANCEL_ROUTES[cancelFamily].includes("kick") && (justPressed.kick || this.hasBuffered("kick")) && this.power >= KICK.cost) {
+          if (CANCEL_ROUTES[cancelFamily].includes("kick") && (justPressed.kick || this.hasBuffered("kick"))) {
             this.consumeBuffered("kick");
-            this.spendPower(KICK.cost);
             this.setState(this.pickKickState(opponent));
             return;
           }
@@ -1375,9 +1382,8 @@ export class Fighter {
       this.setState(this.pickPunchState(opponent));
       return;
     }
-    if ((justPressed.kick || this.hasBuffered("kick")) && this.power >= KICK.cost) {
+    if (justPressed.kick || this.hasBuffered("kick")) {
       this.consumeBuffered("kick");
-      this.spendPower(KICK.cost);
       this.setState(this.pickKickState(opponent));
       return;
     }
@@ -1415,14 +1421,14 @@ export class Fighter {
     return PUNCH_CHAIN[depth % PUNCH_CHAIN.length];
   }
 
-  // Same idea as pickPunchState, just the smaller 2-pose kick set - no
-  // anti-crouch case here, a kick already whiffs clean over a crouch
-  // regardless of which pose it'd have used (see checkHit's crouch/kick
-  // check), so there's nothing for a themed variant to answer.
-  pickKickState(opponent) {
-    const chaining = opponent && (opponent.state === "hitstun" || opponent.state === "knockback");
-    const depth = chaining ? opponent.comboCount : 0;
-    return KICK_CHAIN[depth % KICK_CHAIN.length];
+  // Unlike pickPunchState, this doesn't read the opponent's combo state at
+  // all - see kickThrowCount's own constructor comment for why kick just
+  // alternates on its own throw count instead of only varying while
+  // actively chaining a landed combo.
+  pickKickState() {
+    const pose = KICK_CHAIN[this.kickThrowCount % KICK_CHAIN.length];
+    this.kickThrowCount++;
+    return pose;
   }
 
   // Which of the two identically-statted aerial poses to throw - purely
