@@ -27,7 +27,12 @@
 // Vercel Blob's public files DO send proper CORS headers, so the plain
 // https:// URL from this API works directly with head-image.js's existing
 // `img.crossOrigin = "anonymous"` - no data-URI conversion needed here.
-const API_BASE = "https://www.hoodchan.org/api/v1";
+// Apex domain, not www - www.hoodchan.org 307-redirects to the apex at the
+// Vercel platform level, before this app's own CORS headers (lib/publicApi.ts's
+// Access-Control-Allow-Origin: *) ever get a chance to run, so a cross-origin
+// fetch() from here against www fails with a CORS error even though the
+// actual API route is configured correctly.
+const API_BASE = "https://hoodchan.org/api/v1";
 const FETCH_TIMEOUT_MS = 8000;
 
 async function apiFetch(path) {

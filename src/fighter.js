@@ -18,8 +18,8 @@ export const CANVAS_HEIGHT = 360;
 // Canvas is 800 wide. `x` is a fighter's LEFT edge (see BODY_CENTER_OFFSET
 // in game.js), and the widest a drawn sprite ever gets on screen is ~125px
 // (86px raw frameSize * 1.4 CHARACTER_SCALE, the biggest of any sheet - even
-// specialLow/death's own extra scale multipliers land under that on their
-// own smaller sheets). ARENA_MAX_X used to be 750, which let the right edge
+// death's own extra scale multiplier lands under that on its own smaller
+// sheet). ARENA_MAX_X used to be 750, which let the right edge
 // of the sprite land at x+125=875 - 75px past the canvas's own 800px edge,
 // clipping the fighter half off-screen. 50px margin on the left (unchanged)
 // mirrored on the right: 800 - 50 - 125 = 625. Symmetric, and the sprite
@@ -67,7 +67,7 @@ const HITSTUN_FRAMES = 24;
 // that touches both fighters + the clock at once) - these two are just the
 // pure damage->frames formulas, shared by every call site that lands a hit
 // (checkHit/updateSlide/checkUppercutHit/checkBuilderSpecialHit/
-// checkHodlerSpecialHit/updateProjectiles in game.js) so hitstop and
+// updateProjectiles in game.js) so hitstop and
 // hitstun scale off the exact same "how big was this hit" reading and never
 // drift apart from each other.
 //
@@ -147,7 +147,7 @@ export function computeComboFreezeBonus(comboCount) {
 
 // What actually counts as a combo "ender" for the bigger freeze/shake/bark
 // escalation in game.js (see each checkHit/updateSlide/checkUppercutHit/
-// checkBuilderSpecialHit/checkHodlerSpecialHit/updateProjectiles hit branch's
+// checkBuilderSpecialHit/updateProjectiles hit branch's
 // own lastComboEnder-gated shake/flash/triggerHitstop calls, plus
 // maybeBarkCombo). Definition, spelled out because there's no single obvious
 // one for an
@@ -388,9 +388,9 @@ const MAX_JUGGLE_FRAMES = 150;
 // very first follow-up would make that whole extension system pointless.
 const JUGGLE_SPIKE_MIN_HITS = 3;
 // Every kind that can EVER land on an already-"juggled" defender in the
-// first place (checkHit/updateSlide/checkBuilderSpecialHit/
-// checkHodlerSpecialHit/the plain bolt's own dodge logic in game.js all
-// already exclude an airborne target outright) is, by construction, one of
+// first place (checkHit/updateSlide/checkBuilderSpecialHit/the plain bolt's
+// own dodge logic in game.js all already exclude an airborne target outright)
+// is, by construction, one of
 // this engine's few genuinely hard-hitting moves - there's no "weak jab"
 // that can even reach a juggled opponent to begin with. This list is kept
 // anyway, same reasoning ENDER_KINDS above documents its own short list
@@ -629,15 +629,14 @@ const CANCEL_WINDOWS = {
   uppercut: { start: UPPERCUT.duration - 3, end: UPPERCUT.duration - 1 },
 };
 
-// Archetype-specific specials. Flipper (rat rush) and Collector (bolt) are
-// ranged, spawned via spawnProjectile in game.js off the shared "special"
-// cast pose. Builder and Hodler are melee with their own dedicated sheets/
-// states (specialHigh/specialLow, see body.js) instead of sharing the cast
-// pose - duration/activeStart/activeEnd here time their own active-hitbox
-// window the same way UPPERCUT/KICK do, verified against which frames of
-// each sheet actually show the kick connecting (green impact FX).
+// Archetype-specific specials. Flipper (rat rush), Collector (bolt), and
+// Hodler are all ranged, spawned via spawnProjectile in game.js off the
+// shared "special" cast pose. Builder alone is melee with its own dedicated
+// sheet/state (specialHigh, see body.js) instead of sharing the cast pose -
+// duration/activeStart/activeEnd here time its own active-hitbox window the
+// same way UPPERCUT/KICK do, verified against which frames of the sheet
+// actually show the kick connecting (green impact FX).
 export const BUILDER_SPECIAL = { damage: 30, range: 85, duration: 45, activeStart: 21, activeEnd: 36 };
-export const HODLER_SPECIAL = { damage: 26, range: 92, duration: 28, activeStart: 20, activeEnd: 27 };
 // Power now mostly comes from actually fighting - landing a hit or holding
 // a block - rather than sitting still. Passive trickle is deliberately
 // slow (was 0.15/frame, ~9/sec - fast enough that special was basically
@@ -1087,7 +1086,7 @@ export class Fighter {
     // but nowhere else; every other branch of update() that keys off
     // this.state (jump/block/crouch/etc) never produces these states in the
     // first place.
-    if (["punch", "kick", "special", "specialHigh", "specialLow", "hitstun", "slide", "knockback", "uppercut", "dash", ...PUNCH_POSES.filter((s) => s !== "punch"), ...KICK_POSES.filter((s) => s !== "kick")].includes(this.state)) {
+    if (["punch", "kick", "special", "specialHigh", "hitstun", "slide", "knockback", "uppercut", "dash", ...PUNCH_POSES.filter((s) => s !== "punch"), ...KICK_POSES.filter((s) => s !== "kick")].includes(this.state)) {
       const durations = {
         punch: PUNCH.duration,
         kick: KICK.duration,
@@ -1099,7 +1098,6 @@ export class Fighter {
         groundPunch: POSE_DURATIONS.groundPunch,
         highKick: POSE_DURATIONS.highKick,
         specialHigh: BUILDER_SPECIAL.duration,
-        specialLow: HODLER_SPECIAL.duration,
         // Scaled per-hit by takeDamage (see this.hitstunFrames there) - a
         // jab locks the defender out for far less than an uppercut/special
         // does. HITSTUN_FRAMES is only ever the fallback for the
@@ -1147,9 +1145,9 @@ export class Fighter {
       // Cancel check - see CANCEL_ROUTES/CANCEL_WINDOWS above for the full
       // route graph and window math. moveFamily returns null for every
       // state that flows through this same shared branch but isn't a
-      // cancelable grounded attack (special/specialHigh/specialLow/hitstun/
-      // knockback/dash) - this whole block is a no-op for those, same as it
-      // always was before cancels existed.
+      // cancelable grounded attack (special/specialHigh/hitstun/knockback/
+      // dash) - this whole block is a no-op for those, same as it always was
+      // before cancels existed.
       const cancelFamily = moveFamily(this.state);
       if (cancelFamily) {
         const window = CANCEL_WINDOWS[cancelFamily];
@@ -1318,12 +1316,13 @@ export class Fighter {
     if ((justPressed.special || this.hasBuffered("special")) && this.power >= SPECIAL.cost) {
       this.consumeBuffered("special");
       this.spendPower(SPECIAL.cost);
-      // Builder/Hodler get their own dedicated melee states (see body.js's
-      // specialHigh/specialLow) instead of the shared ranged-cast pose -
-      // see checkBuilderSpecialHit/checkHodlerSpecialHit in game.js for
-      // where their actual hit window is checked.
+      // Builder gets its own dedicated melee state (see body.js's
+      // specialHigh) instead of the shared ranged-cast pose - see
+      // checkBuilderSpecialHit in game.js for where its actual hit window is
+      // checked. Every other archetype (Hodler included) fires the shared
+      // ranged special.
       const type = this.data.archetypeKey;
-      this.setState(type === "Builder" ? "specialHigh" : type === "Hodler" ? "specialLow" : "special");
+      this.setState(type === "Builder" ? "specialHigh" : "special");
       this.lastEvent = "special-start";
       return;
     }
@@ -1522,10 +1521,6 @@ export class Fighter {
     return BUILDER_SPECIAL.damage * this.archetype.damageMult;
   }
 
-  get hodlerSpecialDamage() {
-    return HODLER_SPECIAL.damage * this.archetype.damageMult;
-  }
-
   get slideDamage() {
     return SLIDE.damage * this.archetype.damageMult;
   }
@@ -1638,17 +1633,8 @@ export class Fighter {
   }
 
   takeDamage(amount, fromX, kind) {
-    // Hodler's own special is a holding stance, not just a strike - it
-    // blocks whatever the opponent throws at it the same as a real block,
-    // matching every other archetype's special still costing the same power
-    // and lockout window for the privilege.
-    const isHolding = this.data.archetypeKey === "Hodler" && this.state === "specialLow";
-    // Only a genuine "block" state counts for a perfect parry - not the
-    // Hodler's specialLow holding stance, which is its own separate
-    // block-alike with its own cost/lockout tradeoff already; layering a
-    // free timing bonus on top of that too wasn't part of this mechanic's
-    // design. stateT here is exactly "frames since block was raised" (see
-    // the big comment on PARRY_WINDOW_FRAMES above for why that's reliable).
+    // stateT here is exactly "frames since block was raised" (see the big
+    // comment on PARRY_WINDOW_FRAMES above for why that's reliable).
     const isPerfectParry = this.state === "block" && this.stateT <= PARRY_WINDOW_FRAMES;
     // High/low guard mix-up (see the GUARD_FLASH_FRAMES comment above for
     // the full reasoning): standing block stops mid punches and high
@@ -1665,7 +1651,7 @@ export class Fighter {
     // verify (see the crouch-exploit re-check this was built against).
     // Specials always blow straight through either guard, full stop -
     // unchanged.
-    const blockedByStanding = (this.state === "block" || isHolding) && kind !== "special" && kind !== "slide";
+    const blockedByStanding = this.state === "block" && kind !== "special" && kind !== "slide";
     // "airKick" added alongside kick/uppercut - the whole point of a jump-in
     // is that it's a HIGH threat a crouching guard shouldn't save you from
     // (real fighting games: this is exactly what makes an overhead/jump-in
@@ -1753,7 +1739,7 @@ export class Fighter {
       // never touch juggleHits/juggleAirborneFrames at all. In practice this
       // can only ever fire for an uppercut relaunch or an airKick/flyingKick
       // follow-up - checkHit/updateSlide/checkBuilderSpecialHit/
-      // checkHodlerSpecialHit/updateProjectiles' own dodge logic all still
+      // updateProjectiles' own dodge logic all still
       // exclude a "juggled" defender outright (see each one's own comment in
       // game.js), so no grounded move can ever reach a defender in this
       // state to begin with. Deliberately reuses applyJuggleLaunch WHOLESALE

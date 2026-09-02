@@ -23,10 +23,6 @@ const DEATH_EXTRA_SCALE = 1.3;
 // otherwise floats the character's actual visible body above the ground
 // line. 8.75 * CHARACTER_SCALE(1.4) * DEATH_EXTRA_SCALE(1.3) ≈ 16.
 const DEATH_Y_OFFSET = 16;
-// Hodler's low-special sheet authors at 68px vs the standing sheets' 78px -
-// without this it reads as a hair smaller than every other pose instead of
-// matching. ~78/68.
-const SPECIAL_LOW_EXTRA_SCALE = 1.15;
 const ARENA_BACKGROUNDS = [
   loadImg("assets/backgrounds/arena-2.png"),
   loadImg("assets/backgrounds/arena-3.png"),
@@ -83,11 +79,10 @@ const SHEETS = {
   // Post-match victory pose - only ever entered externally by game.js when
   // a round ends, never by player input.
   flex: { img: loadImg("assets/sprites/flex.png"), frameSize: 78 },
-  // Builder/Hodler's dedicated melee specials (see fighter.js's
-  // specialHigh/specialLow states) - a real high/low kick each, instead of
-  // sharing the ranged-cast "spellcast" pose every other archetype uses.
+  // Builder's dedicated melee special (see fighter.js's specialHigh state) -
+  // a real high kick, instead of sharing the ranged-cast "spellcast" pose
+  // every other archetype (Hodler included) uses.
   specialHigh: { img: loadImg("assets/sprites/special-high.png"), frameSize: 78 },
-  specialLow: { img: loadImg("assets/sprites/special-low.png"), frameSize: 68 },
   // New grounded single-frame strike/guard stills below - registered as
   // drawable body poses only, not yet wired to any input/combat logic (that's
   // the next phase's job). Naming picked so that pass can predict the state
@@ -170,9 +165,6 @@ const HEAD_ANCHORS = {
   // hijack it this time since it's a leg strike, values track the head/
   // hood cleanly throughout.
   specialHigh: [{"x":38.2,"y":-7},{"x":38.2,"y":-7},{"x":37.8,"y":-7},{"x":37.6,"y":-6},{"x":38.7,"y":-5},{"x":30.8,"y":-6},{"x":25.4,"y":-5},{"x":35.9,"y":-5},{"x":39.4,"y":-5},{"x":38.0,"y":-5},{"x":36.4,"y":-4},{"x":35.5,"y":-4},{"x":36.0,"y":-5},{"x":36.1,"y":-5},{"x":37.0,"y":-6}],
-  // 7-frame low sweep special (Hodler) - crouched throughout, so y sits much
-  // lower than the standing sheets (matches crouch's own anchor pattern).
-  specialLow: [{"x":40.2,"y":20},{"x":38.7,"y":20},{"x":41.5,"y":20},{"x":35.9,"y":21},{"x":23.3,"y":21},{"x":25.8,"y":21},{"x":30.4,"y":21}],
   // 8-frame collapse. The earlier version of this data swung the anchor from
   // x~14 to x~43 across the sequence - that was wrong, a sampling error, not
   // real tumbling: frames 3-7 raise a leg up and over the torso, so a
@@ -288,11 +280,10 @@ const ANIMS = {
   // much longer the post-match display runs - not looped, so it doesn't
   // visibly crouch back down and repeat mid-celebration.
   flex: { sheet: "flex", frames: 8, durationFrames: 40, loop: false },
-  // durationFrames (45)/(28) match BUILDER_SPECIAL.duration/HODLER_SPECIAL.duration
-  // in fighter.js - active-hitbox window (game.js) is timed to whichever
-  // frames the sheet's own impact FX actually shows the kick connecting.
+  // durationFrames (45) matches BUILDER_SPECIAL.duration in fighter.js -
+  // active-hitbox window (game.js) is timed to whichever frames the sheet's
+  // own impact FX actually shows the kick connecting.
   specialHigh: { sheet: "specialHigh", frames: 15, durationFrames: 45, loop: false },
-  specialLow: { sheet: "specialLow", frames: 7, durationFrames: 28, loop: false },
   // New single-frame still poses below - held for their whole state duration
   // rather than cycling, same pattern slide/knockback/uppercut-charge above
   // use. Not yet reachable from any input (see fighter.js) - durationFrames
@@ -388,14 +379,13 @@ export function drawFighter(ctx, fighter, playerNum) {
   }
 
   const isCrouch = state === "crouch";
-  // Crouch, specialLow, and ko all scale the body around the same bottom-
-  // center pivot (crouch shrinks, the other two grow) - see the comments on
-  // SPECIAL_LOW_EXTRA_SCALE/DEATH_EXTRA_SCALE above for why. null means "no
-  // correction needed". Folded into one shared branch (rather than a
-  // separate one for ko) so the head-anchor pivot correction below - which
-  // keys off this same variable - automatically covers ko too now that the
-  // head is drawn for it.
-  const extraScale = isCrouch ? CROUCH_EXTRA_SCALE : state === "specialLow" ? SPECIAL_LOW_EXTRA_SCALE : state === "ko" ? DEATH_EXTRA_SCALE : null;
+  // Crouch and ko both scale the body around the same bottom-center pivot
+  // (crouch shrinks, ko grows) - see the comment on DEATH_EXTRA_SCALE above
+  // for why. null means "no correction needed". Folded into one shared
+  // branch (rather than a separate one for ko) so the head-anchor pivot
+  // correction below - which keys off this same variable - automatically
+  // covers ko too now that the head is drawn for it.
+  const extraScale = isCrouch ? CROUCH_EXTRA_SCALE : state === "ko" ? DEATH_EXTRA_SCALE : null;
 
   // The crouch source art draws the character filling notably more of its
   // frame than every other sheet (measured ~69% of frame width vs ~47% for
