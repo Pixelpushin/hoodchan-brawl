@@ -909,6 +909,19 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // comment above), so that's the only state worth capturing here.
     const wasBlocking = defender.state === "block";
     attacker.hasHit = true;
+    // Landing a real air hit refreshes the ATTACKER's own airborneT budget
+    // the same way applyJuggleLaunch (fighter.js) refreshes the DEFENDER's
+    // juggle suspension on every hit they take while airborne - without
+    // this, the attacker's flight was capped at one fixed JUMP_DURATION
+    // (48 frames) regardless of what they did with it, while a juggled
+    // defender can stay up for up to MAX_JUGGLE_FRAMES (150). That mismatch
+    // meant the attacker always ran out of air well before a juggled
+    // opponent came back down, forcing a full land-and-rejump between every
+    // single air hit instead of one continuous chase. Resetting to 0 here
+    // hands them a fresh jump's worth of airtime exactly when they've
+    // earned it - by actually connecting - so both fighters stay suspended
+    // together for the rest of the exchange instead of just the defender.
+    attacker.airborneT = 0;
     // "airKick" always - see AIR_KICK_POSES' own comment in fighter.js for
     // why airKick/flyingKick collapse to one reported kind, same as every
     // PUNCH_POSES/KICK_POSES variant already collapses to "punch"/"kick" in
