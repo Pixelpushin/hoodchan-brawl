@@ -19,7 +19,7 @@
 // enforced — you must own the NFT to join.
 
 const { redisCommand } = require("../_lib/redis");
-const { MAX_TOKEN_ID } = require("../_lib/constants");
+const { MAX_TOKEN_ID } = require("../_lib/stats-keys");
 
 const LOBBY_TTL_SECONDS = 600; // refresh TTL on every join so active rooms survive
 

@@ -18,7 +18,7 @@
 // both players' wallet/tokenId pairs for the on-chain call.
 
 const { redisMultiExec, redisCommand } = require("../_lib/redis");
-const { MAX_TOKEN_ID } = require("../_lib/constants");
+const { MAX_TOKEN_ID } = require("../_lib/stats-keys");
 
 const RECENT_MATCHES_CAP = 200;
 const LEADERBOARD_KEY = "leaderboard:wins";
