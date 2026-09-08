@@ -131,16 +131,25 @@ module.exports = async (req, res) => {
     }
 
     // --- Slot assignment ---
-    // Explicit side takes priority; otherwise auto-assign.
+    // Explicit side takes priority; otherwise auto-assign by OCCUPANCY, not
+    // wallet presence. This used to check `!lobby.p1.wallet`, which meant a
+    // slot that was occupied-but-pre-wallet (the normal state for both
+    // sides during the initial connect handshake, before either player has
+    // picked a fighter) still looked "available" - a guest's side-less
+    // auto-join (lobby.js's _autoJoin) could land in p1 even after the
+    // creator already claimed it, and a third stranger opening the link
+    // after both real players had connected but before either had a wallet
+    // yet could silently steal a slot. Occupancy (`!lobby.p1`) is the
+    // correct test for "is anyone sitting here at all".
     let slot;
     if (side === "p1" || side === "p2") {
       slot = side;
-    } else if (!lobby.p1 || !lobby.p1.wallet) {
+    } else if (!lobby.p1) {
       slot = "p1";
-    } else if (!lobby.p2 || !lobby.p2.wallet) {
+    } else if (!lobby.p2) {
       slot = "p2";
     } else {
-      // Both slots filled - check if this wallet is already in a slot (re-join)
+      // Both slots occupied - check if this wallet is already in a slot (re-join)
       const filledSlot =
         lobby.p1?.wallet === wallet?.toLowerCase() && lobby.p1?.tokenId === tokenId ? "p1" :
         lobby.p2?.wallet === wallet?.toLowerCase() && lobby.p2?.tokenId === tokenId ? "p2" :
@@ -159,9 +168,21 @@ module.exports = async (req, res) => {
     slotData.joinedAt = Date.now();
     lobby[slot] = slotData;
 
-    // Flip to ready when both slots have a wallet registered.
+    // Two-stage status. "connected" fires as soon as both slots are
+    // occupied at all (even pre-wallet) - this is what lets BOTH clients
+    // leave the join modal and reach fighter select (see lobby.js's _poll(),
+    // main.js's onMatchReady). "ready" only once both wallets are actually
+    // registered - the real match-launch signal (main.js only calls
+    // maybeLaunchPvpMatch() on "ready", never on "connected"). Previously
+    // this only ever set "ready" or "waiting" - there was no signal for
+    // "both people are here, go pick fighters" that didn't ALSO require a
+    // wallet, which is what created the deadlock: the fighter-select screen
+    // (where a wallet gets registered) was only reachable via a status this
+    // same handler couldn't produce without a wallet already being set.
     if (lobby.p1?.wallet && lobby.p2?.wallet) {
       lobby.status = "ready";
+    } else if (lobby.p1 && lobby.p2) {
+      lobby.status = "connected";
     } else {
       lobby.status = "waiting";
     }

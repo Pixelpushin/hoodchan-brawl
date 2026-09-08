@@ -31,11 +31,22 @@ let _walletTokenIds = null;
 
 initLobby({
   async onMatchReady({ roomCode, side, lobbyState }) {
+    // Fires twice per real match: once at "connected" (both players
+    // present, pre-wallet - transition into fighter select) and again at
+    // "ready" (both wallets registered, after each side clicks READY -
+    // launch the match). Only do the modal-teardown + enterSelectScreen
+    // reset on the FIRST firing - enterSelectScreen re-rolls both panels'
+    // pools and auto-picks a fighter, which would silently overwrite
+    // whatever this player had already deliberately selected by the time
+    // the second ("ready") firing comes through.
+    const alreadyConnected = _pvpMode;
     _pvpMode = true;
     _pvpRoomCode = roomCode;
     _pvpSide = side;
-    closeLobby();
-    await enterSelectScreen(_walletTokenIds);
+    if (!alreadyConnected) {
+      closeLobby();
+      await enterSelectScreen(_walletTokenIds);
+    }
     if (lobbyState?.status === "ready") maybeLaunchPvpMatch();
   },
 });

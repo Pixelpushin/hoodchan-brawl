@@ -288,7 +288,12 @@ async function _poll() {
     if (!res.ok) throw new Error(`status ${res.status}`);
     const lobbyState = await res.json();
 
-    if (lobbyState.status === "ready") {
+    // "connected" (both players present, pre-wallet) transitions out of the
+    // join modal into fighter select; "ready" (both wallets registered)
+    // additionally auto-launches the match. Both fire the same callback -
+    // main.js's onMatchReady reads lobbyState.status itself to decide which
+    // of those two things this particular firing means.
+    if (lobbyState.status === "ready" || lobbyState.status === "connected") {
       _stopPolling();
       _onMatchReady?.({
         roomCode: _pollRoomCode,

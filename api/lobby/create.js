@@ -40,7 +40,10 @@ module.exports = async (req, res) => {
       const set = await redisCommand(
         "SET",
         key,
-        JSON.stringify({ status: "waiting", p1: null, p2: null, createdAt: Date.now() }),
+        // p1 is claimed by the creator immediately (pre-wallet) so a guest's
+        // side-less auto-join (see lobby.js's _autoJoin) can't land in p1 too -
+        // see join.js's occupancy-based slot assignment, which this depends on.
+        JSON.stringify({ status: "waiting", p1: { joinedAt: Date.now() }, p2: null, createdAt: Date.now() }),
         "EX",
         String(LOBBY_TTL_SECONDS),
         "NX",
