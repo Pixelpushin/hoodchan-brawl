@@ -37,6 +37,13 @@ module.exports = async (req, res) => {
     try { lobby = JSON.parse(raw); } catch {
       res.status(502).json({ error: "Corrupted room state" }); return;
     }
+    // Keep a live room alive while people are still picking: only join.js
+    // refreshed the 600s TTL, so two players deliberating for ten minutes
+    // got a 404 on READY. Completed rooms keep complete.js's longer TTL for
+    // the mint worker - never shorten those.
+    if (lobby.status === "waiting" || lobby.status === "connected" || lobby.status === "ready") {
+      redisCommand("EXPIRE", key, "600").catch(() => {});
+    }
     // Only expose the fields clients need - don't leak signatures or internal timestamps.
     res.status(200).json({
       status: lobby.status,

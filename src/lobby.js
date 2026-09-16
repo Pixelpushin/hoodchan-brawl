@@ -14,14 +14,17 @@
 const POLL_INTERVAL_MS = 2000;
 
 let _onMatchReady = null; // set by initLobby({ onMatchReady })
+let _onLobbyError = null; // set by initLobby({ onLobbyError }) - room gone while in fighter select
 let _pollTimer = null;
 let _pollRoomCode = null;
 let _pollSide = null;     // 'p1' | 'p2'
+let _connectedNotified = false; // "connected" is announced once per room; polling continues until "ready"
 
 // ===== Lobby init (called once from main.js) =====
 
-export function initLobby({ onMatchReady } = {}) {
+export function initLobby({ onMatchReady, onLobbyError } = {}) {
   _onMatchReady = onMatchReady ?? null;
+  _onLobbyError = onLobbyError ?? null;
 
   const remotePvpBtn = document.getElementById("remote-pvp-btn");
   const lobbyModal = document.getElementById("lobby-modal");
@@ -78,8 +81,10 @@ export function initLobby({ onMatchReady } = {}) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `status ${res.status}`);
       }
+      // The server decides which slot this device is; don't assume p2.
+      const { slot } = await res.json().catch(() => ({}));
       _showLobbyJoined();
-      _startPolling(code, "p2");
+      _startPolling(code, slot === "p1" ? "p1" : "p2");
     } catch (err) {
       console.error("[lobby] join failed", err);
       _showLobbyError(err.message || "Couldn't join room. Check the code and try again.");
@@ -137,6 +142,13 @@ export async function lobbyRegisterFighter({ side, tokenId, walletAddress }) {
   }
   // Continue or start polling for ready state after fighter registration.
   if (_pollRoomCode) _startPolling(_pollRoomCode, _pollSide ?? side);
+}
+
+// Called from main.js when something recoverable happened in fighter select
+// (e.g. the opponent's fighter failed to load) and the room should be watched
+// again for a fresh "ready".
+export function lobbyResumePolling() {
+  if (_pollRoomCode) _startPolling(_pollRoomCode, _pollSide ?? "p1");
 }
 
 // Called from main.js when match ends.
@@ -239,8 +251,9 @@ async function _autoJoin(roomCode) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `status ${res.status}`);
     }
+    const { slot } = await res.json().catch(() => ({}));
     _showLobbyJoined();
-    _startPolling(roomCode, "p2");
+    _startPolling(roomCode, slot === "p1" ? "p1" : "p2");
   } catch (err) {
     console.error("[lobby] auto-join failed", err);
     _showLobbyError(err.message || "Couldn't join room. It may have expired.");
@@ -259,6 +272,7 @@ function _showLobbyJoined() {
 
 function _startPolling(roomCode, side) {
   _stopPolling();
+  if (_pollRoomCode !== roomCode) _connectedNotified = false;
   _pollRoomCode = roomCode;
   _pollSide = side;
   _poll();
@@ -278,22 +292,23 @@ async function _poll() {
     if (res.status === 404) {
       // Room expired or doesn't exist.
       _stopPolling();
-      _showLobbyError("Room not found or expired. Create a new one.");
+      const msg = "Room not found or expired. Create a new one.";
+      _showLobbyError(msg);
       _setLobbyLoading(false);
       document.getElementById("lobby-options")?.classList.remove("hidden");
       document.getElementById("lobby-waiting")?.classList.add("hidden");
       document.getElementById("lobby-joined")?.classList.add("hidden");
+      // The modal is already closed once both players reached fighter
+      // select, so the message above would be invisible there - let main.js
+      // show it on the select screen too.
+      _onLobbyError?.(msg);
       return;
     }
     if (!res.ok) throw new Error(`status ${res.status}`);
     const lobbyState = await res.json();
 
-    // "connected" (both players present, pre-wallet) transitions out of the
-    // join modal into fighter select; "ready" (both wallets registered)
-    // additionally auto-launches the match. Both fire the same callback -
-    // main.js's onMatchReady reads lobbyState.status itself to decide which
-    // of those two things this particular firing means.
-    if (lobbyState.status === "ready" || lobbyState.status === "connected") {
+    // "ready" (both wallets registered) is terminal for polling: launch.
+    if (lobbyState.status === "ready") {
       _stopPolling();
       _onMatchReady?.({
         roomCode: _pollRoomCode,
@@ -301,6 +316,19 @@ async function _poll() {
         lobbyState,
       });
       return;
+    }
+    // "connected" (both players present, pre-wallet) transitions out of the
+    // join modal into fighter select - announced ONCE, and polling keeps
+    // going. It used to stop here too, which meant whoever clicked READY
+    // first restarted polling, saw "connected" again, stopped for good, and
+    // never learned the room became "ready" when the other player readied.
+    if (lobbyState.status === "connected" && !_connectedNotified) {
+      _connectedNotified = true;
+      _onMatchReady?.({
+        roomCode: _pollRoomCode,
+        side: _pollSide,
+        lobbyState,
+      });
     }
 
     // Update waiting text if we're the host.

@@ -2,7 +2,7 @@ import { activeAdapter } from "./adapters/index.js";
 import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
 import { createGame } from "./game.js";
 import { initSound, playSound, playRandomTrack, stopMusic, getAudioCtx } from "./sound.js";
-import { initLobby, initCommunityBar, lobbyComplete, closeLobby, lobbyRegisterFighter } from "./lobby.js";
+import { initLobby, initCommunityBar, lobbyComplete, closeLobby, lobbyRegisterFighter, lobbyResumePolling } from "./lobby.js";
 import { showMintCelebration } from "./mint-celebration.js";
 import { pickRandomArena, drawArena, drawFighter, drawFlash } from "./body.js";
 import { speakTaunt } from "./tts.js";
@@ -25,11 +25,26 @@ initCommunityBar();
 let _pvpMode = false;
 let _pvpRoomCode = null;
 let _pvpSide = null;
+// True once THIS device's fighter is registered with the lobby - READY is a
+// one-shot in remote PVP (see updateReadyState).
+let _pvpRegistered = false;
 // Wallet token IDs stored here so setup screen stays visible after connect
 // (REMOTE PVP button needs to remain accessible).
 let _walletTokenIds = null;
+// The silent wallet resume (tryResumeWalletSession) races a share-link
+// auto-join: the lobby can reach "connected" before eth_accounts +
+// fetchWalletTokenIds have resolved, which used to drop a wallet-holding
+// guest into fighter select with no fighters. onMatchReady awaits this.
+let _walletResume = Promise.resolve();
 
 initLobby({
+  onLobbyError(msg) {
+    // Only meaningful once the modal is gone (fighter select); before that
+    // lobby.js shows the message in the modal itself.
+    if (!_pvpMode) return;
+    p1Label.textContent = msg;
+    fitSelectScreen();
+  },
   async onMatchReady({ roomCode, side, lobbyState }) {
     // Fires twice per real match: once at "connected" (both players
     // present, pre-wallet - transition into fighter select) and again at
@@ -45,9 +60,15 @@ initLobby({
     _pvpSide = side;
     if (!alreadyConnected) {
       closeLobby();
+      await _walletResume.catch(() => {});
       await enterSelectScreen(_walletTokenIds);
     }
-    if (lobbyState?.status === "ready") maybeLaunchPvpMatch();
+    if (lobbyState?.status === "ready") {
+      // Both wallets registered. The opponent is whatever THEY registered on
+      // their device (server-verified ownership), never a local pick.
+      await applyPvpOpponent(lobbyState);
+      maybeLaunchPvpMatch();
+    }
   },
 });
 
@@ -290,7 +311,7 @@ function hideWalletOption() {
 if (!activeAdapter.config.chain) {
   hideWalletOption();
 } else if (hasInjectedWallet()) {
-  tryResumeWalletSession();
+  _walletResume = tryResumeWalletSession();
 } else {
   // Some wallet extensions inject window.ethereum asynchronously, slightly
   // after this script runs - a single synchronous check at load time can
@@ -303,7 +324,7 @@ if (!activeAdapter.config.chain) {
     if (decided) return;
     decided = true;
     if (hasInjectedWallet()) {
-      tryResumeWalletSession();
+      _walletResume = tryResumeWalletSession();
     } else {
       hideWalletOption();
     }
@@ -491,6 +512,13 @@ const portraits = {
 };
 
 function updateReadyState() {
+  if (_pvpMode) {
+    // Remote PVP: READY only needs THIS player's fighter - the opponent's
+    // comes from the lobby (applyPvpOpponent), not the P2 panel - and it's
+    // one-shot once registered.
+    readyBtn.disabled = _pvpRegistered || !panelState.p1.selectedData;
+    return;
+  }
   readyBtn.disabled = !(panelState.p1.selectedData && panelState.p2.selectedData);
 }
 
@@ -636,12 +664,50 @@ async function enterSelectScreen(walletTokenIds) {
     `url(${ARENA_BG_IMAGES[Math.floor(Math.random() * ARENA_BG_IMAGES.length)]})`,
   );
 
-  panelState.p1 = { pool: walletTokenIds?.length ? walletTokenIds : activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
-  panelState.p2 = { pool: activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
-  p1Label.textContent = "CHOOSE YOUR FIGHTER";
-  p2Label.textContent = "CHOOSE YOUR OPPONENT";
+  // Remote PVP needs a wallet that actually holds a fighter: the lobby
+  // enforces ownerOf on register (api/lobby/join.js), so a random free-play
+  // pool here would only offer tokens this device can't register (the exact
+  // "it's showing tokens I don't hold" confusion) - show why instead.
+  const pvpNoWallet = _pvpMode && !walletTokenIds?.length;
+  panelState.p1 = { pool: pvpNoWallet ? [] : walletTokenIds?.length ? walletTokenIds : activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
+  // Remote PVP: the P2 side is the OTHER player's registered fighter, filled
+  // in by applyPvpOpponent once the lobby reports it - never a random pool
+  // this device could pick from.
+  panelState.p2 = { pool: _pvpMode ? [] : activeAdapter.getFreePlayTokenIds(RANDOM_POOL_SIZE), page: 0, selectedId: null, selectedData: null };
+  p1Label.textContent = pvpNoWallet
+    ? `Connect a wallet that holds a ${activeAdapter.config.unitName} to fight online.`
+    : "CHOOSE YOUR FIGHTER";
+  p2Label.textContent = _pvpMode ? "WAITING FOR OPPONENT..." : "CHOOSE YOUR OPPONENT";
+  readyBtn.textContent = _pvpMode ? "READY" : "START BATTLE";
   updateReadyState();
   await Promise.all([renderPanel("p1"), renderPanel("p2")]);
+  if (_pvpMode) {
+    p2Grid.innerHTML = `<div class="grid-loading"><p>Your opponent picks on their own device.</p></div>`;
+    p2Pagination.innerHTML = "";
+  }
+  if (pvpNoWallet) {
+    // The setup screen (and its Connect button) is hidden by now - give the
+    // guest a way to connect right here instead of a dead end.
+    p1Grid.innerHTML = "";
+    const btn = document.createElement("button");
+    btn.textContent = "CONNECT WALLET";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const address = await connectWallet(activeAdapter.config.chain);
+        await proceedWithWallet(address, { unlockSound: true });
+        if (_walletTokenIds?.length) await enterSelectScreen(_walletTokenIds);
+        else p1Label.textContent = `No ${activeAdapter.config.unitNamePlural} in that wallet.`;
+      } catch (err) {
+        p1Label.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+        fitSelectScreen();
+      }
+    });
+    p1Grid.appendChild(btn);
+    p1Pagination.innerHTML = "";
+  }
   // Never open on two blank portraits - auto-pick the top-left fighter in
   // each pool so both sides show something immediately, same as if the
   // visitor had just clicked the first card themselves.
@@ -664,13 +730,25 @@ readyBtn.addEventListener("click", async () => {
     const data1 = panelState.p1.selectedData;
     if (!data1) { readyBtn.disabled = false; return; }
     const address = await getConnectedAccount().catch(() => null);
-    if (!address) { readyBtn.disabled = false; return; }
+    if (!address) {
+      p1Label.textContent = "Connect your wallet first.";
+      fitSelectScreen();
+      readyBtn.disabled = false;
+      return;
+    }
     try {
       await lobbyRegisterFighter({ side: _pvpSide ?? "p1", tokenId: data1.tokenId, walletAddress: address });
-      // Poll result handled by lobby.js onMatchReady → maybeLaunchPvpMatch
+      _pvpRegistered = true;
+      readyBtn.textContent = "WAITING FOR OPPONENT...";
+      // Poll result handled by lobby.js onMatchReady → applyPvpOpponent →
+      // maybeLaunchPvpMatch
     } catch (err) {
       console.error("[pvp] register fighter failed", err);
-      readyBtn.disabled = false;
+      // Surface the server's reason (e.g. ownership) where the player is
+      // looking instead of only in the console - minus the raw address.
+      p1Label.textContent = String(err.message ?? "Couldn't register").replace(/0x[0-9a-fA-F]{40}/g, "your wallet");
+      fitSelectScreen();
+      updateReadyState();
     }
     return;
   }
@@ -679,6 +757,42 @@ readyBtn.addEventListener("click", async () => {
   const data2 = panelState.p2.selectedData;
   await startMatch(data1, data2, { p2AI: true, practiceMode: practiceToggle.checked });
 });
+
+// Remote PVP: load the OTHER player's registered fighter from the lobby
+// state into the P2 slot. Their ownership was enforced server-side when they
+// registered (api/lobby/join.js), so it's stamped verified with THEIR wallet:
+// the post-match mint pairs the two real owners, not this device's account.
+// Idempotent - the "ready" poll can fire more than once for the same lobby.
+let _pvpOpponentLoad = null;
+async function applyPvpOpponent(lobbyState) {
+  const opp = _pvpSide === "p2" ? lobbyState?.p1 : lobbyState?.p2;
+  if (opp?.tokenId == null) return;
+  const tokenId = Number(opp.tokenId);
+  if (panelState.p2.selectedId === tokenId && panelState.p2.selectedData) return;
+  if (_pvpOpponentLoad?.tokenId === tokenId) return _pvpOpponentLoad.promise;
+  const promise = (async () => {
+    p2Label.textContent = `Loading opponent #${tokenId}...`;
+    fitSelectScreen();
+    const data = await activeAdapter.fetchFighterData(tokenId);
+    data.ownerAddress = opp.wallet ?? null;
+    data.verified = true;
+    panelState.p2.selectedId = tokenId;
+    panelState.p2.selectedData = data;
+    portraits.p2.setHead(data.imageUrl);
+    p2Label.textContent = `${data.name ?? `#${tokenId}`} - ${data.archetypeKey ?? "Builder"}`;
+    fitSelectScreen();
+  })().catch((err) => {
+    console.error("[pvp] opponent load failed", err);
+    p2Label.textContent = `Couldn't load opponent #${tokenId} - retrying...`;
+    fitSelectScreen();
+    // Forget this attempt and watch the room again so the next "ready" poll
+    // retries the load instead of leaving both players stranded.
+    _pvpOpponentLoad = null;
+    lobbyResumePolling();
+  });
+  _pvpOpponentLoad = { tokenId, promise };
+  return promise;
+}
 
 // Fires when lobby confirms both sides ready. If fighters are already
 // selected on this device, starts immediately. Otherwise the user still
@@ -897,7 +1011,7 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
         wins,
         matchCanvas: canvas,
         audioCtx: getAudioCtx(),
-        walletAddress: getConnectedAccount(),
+        walletAddress: await getConnectedAccount().catch(() => null),
       });
     } else if (winnerId !== null || loserId !== null) {
       // vs-AI: record stats + enqueue soulbound mint for both verified fighters
@@ -924,7 +1038,7 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
           wins,
           matchCanvas: canvas,
           audioCtx: getAudioCtx(),
-          walletAddress: getConnectedAccount(),
+          walletAddress: await getConnectedAccount().catch(() => null),
         });
       }
     }

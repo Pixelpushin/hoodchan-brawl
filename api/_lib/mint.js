@@ -19,8 +19,9 @@ const RPC_URL = "https://rpc.mainnet.chain.robinhood.com";
 const CHAIN_ID = 4663n;
 const CHAIN_ID_HEX = "0x1237";
 
-// HOODCHAN NFT contract on Robinhood Chain
-const HOODCHAN_CONTRACT = "0x774Db2207D26570F5638028839c816702A40aBC2";
+// HOODCHAN NFT contract on Robinhood Chain - the one shared constant (see
+// api/_lib/chain.js; scripts/test-lobby-ownership.mjs fails on any other copy).
+const { NFT_CONTRACT: HOODCHAN_CONTRACT } = require("./chain");
 
 // ERC-6551 registry — same canonical address on every chain
 const REGISTRY_ADDRESS = "0x000000006551c19487814612e58FE06813775758";
