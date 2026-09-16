@@ -47,11 +47,26 @@ function getProvider() {
   });
 }
 
+// The ONLY reader of MINTER_PRIVATE_KEY. Trims and shape-checks the value
+// before ethers ever sees it: ethers.Wallet throws 'invalid BytesLike value
+// (value="…")' with the offending string embedded in the message, and a
+// trailing newline in the env var once put the real key into that message,
+// into Redis (mint:cron:lastError) and out through the public /api/status.
+// A malformed key now fails with a generic error that never contains it.
+function readMinterKey() {
+  const raw = process.env.MINTER_PRIVATE_KEY;
+  if (!raw) throw new Error("MINTER_PRIVATE_KEY not set");
+  const key = String(raw).trim();
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error("MINTER_PRIVATE_KEY is malformed (expected 32-byte hex)");
+  }
+  return key.startsWith("0x") ? key : `0x${key}`;
+}
+
 function getContract(provider) {
   const address = process.env.SOULBOUND_CONTRACT_ADDRESS;
-  const key = process.env.MINTER_PRIVATE_KEY;
-  if (!address || !key) throw new Error("SOULBOUND_CONTRACT_ADDRESS or MINTER_PRIVATE_KEY not set");
-  const wallet = new ethers.Wallet(key, provider);
+  if (!address) throw new Error("SOULBOUND_CONTRACT_ADDRESS not set");
+  const wallet = new ethers.Wallet(readMinterKey(), provider);
   return new ethers.Contract(address, SOULBOUND_ABI, wallet);
 }
 
@@ -66,9 +81,7 @@ function getContract(provider) {
 let cachedMinterAddress = null;
 function getMinterAddress() {
   if (cachedMinterAddress) return cachedMinterAddress;
-  const key = process.env.MINTER_PRIVATE_KEY;
-  if (!key) throw new Error("MINTER_PRIVATE_KEY not set");
-  cachedMinterAddress = new ethers.Wallet(key).address;
+  cachedMinterAddress = new ethers.Wallet(readMinterKey()).address;
   return cachedMinterAddress;
 }
 

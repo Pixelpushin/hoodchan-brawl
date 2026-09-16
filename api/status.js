@@ -193,7 +193,10 @@ module.exports = async (req, res) => {
       log.error("status.cronLastFailed", { error: err.message });
     }
     try {
-      lastError = await redisCommand("GET", "mint:cron:lastError");
+      // Belt and braces: the cron already scrubs what it stores, but this is a
+      // public endpoint, so scrub again on the way out (api/_lib/log.js).
+      const rawLastError = await redisCommand("GET", "mint:cron:lastError");
+      lastError = rawLastError ? require("./_lib/log").redactSecrets(rawLastError, 300) : null;
     } catch (err) {
       log.error("status.cronLastErrorFailed", { error: err.message });
     }
