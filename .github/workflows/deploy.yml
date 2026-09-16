@@ -20,14 +20,44 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
 permissions:
   contents: read
   id-token: write
   attestations: write
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - run: npm test
+
+      - run: node scripts/test-lobby-ownership.mjs --offline
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # Own concurrency group, cancel-in-progress FALSE (overrides the
+    # workflow-level group above, which stays cancel-in-progress: true - safe
+    # for the test job, redundant test runs are cheap to kill). A push
+    # landing while `vercel deploy --prebuilt --prod` is mid-flight must
+    # queue behind it, not SIGTERM the runner out from under a deploy that
+    # may already be in progress server-side on Vercel's end.
+    concurrency:
+      group: deploy-production-deploy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 

@@ -36,6 +36,8 @@ const crypto = require("node:crypto");
 const { ethers } = require("ethers");
 const { redisMultiExec, redisCommand, redisCompareAndSet } = require("../_lib/redis");
 const { enforceRateLimit } = require("../_lib/rate-limit");
+const { requireSession } = require("../_lib/auth");
+const { TTL_BY_STATE } = require("../_lib/room");
 const {
   MAX_TOKEN_ID,
   statsKeys,
@@ -60,7 +62,15 @@ const ISSUED_AT_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes in the past
 const ISSUED_AT_MAX_SKEW_MS = 60 * 1000; // 60s clock skew tolerance into the future
 
 const SUBMIT_TTL_SECONDS = 600; // refreshed while waiting on the other side
-const COMPLETE_TTL_SECONDS = 3600; // same "give the mint worker an hour" window as before
+// Reuses api/_lib/room.js's TTL_BY_STATE.complete (86400s) instead of a
+// second hardcoded value - this route predates room.js and keeps its own CAS
+// loop rather than going through transition() (see the file header), but a
+// terminal-state TTL is exactly the kind of thing that drifting into two
+// sources of truth (this used to be its own 3600s, one hour) quietly breaks:
+// a `status: "complete"` room written here lived for 1 hour, while every
+// OTHER terminal status (verified/recorded/disputed, all written via
+// room.js's transition()) lives for a full day.
+const COMPLETE_TTL_SECONDS = TTL_BY_STATE.complete;
 const MINTQUEUE_TTL_SECONDS = 7200;
 
 const CAS_ATTEMPTS = 4;
@@ -135,13 +145,24 @@ function otherSideOf(side) {
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
   if (req.method !== "POST") { res.status(405).json({ error: "Use POST" }); return; }
 
   // Mint-adjacent route - a Redis outage should throttle submissions rather
   // than wave an unlimited flood through (see api/_lib/rate-limit.js's table).
   if (!(await enforceRateLimit(req, res, "complete", 10, 600, { failOpen: false }))) return;
+
+  // Requires a session on top of the EIP-191 signature verified below - the
+  // signature alone proves "some wallet with this private key attested to
+  // this result", the session additionally proves "the caller submitting it
+  // right now is that same wallet" (403 SESSION_MISMATCH otherwise). Without
+  // this, a captured signed result body (the signature itself doesn't name
+  // who's allowed to relay it) could be replayed by anyone racing to submit
+  // it first - single-use (`sigused:`) stops a literal replay, but not a
+  // different caller submitting the FIRST copy on the real signer's behalf.
+  const session = await requireSession(req, res);
+  if (!session) return; // requireSession already wrote 401 {code:"UNAUTHENTICATED"}
 
   const body = req.body || {};
   const {
@@ -197,6 +218,11 @@ module.exports = async (req, res) => {
   }
 
   const walletLc = wallet.toLowerCase();
+
+  if (session.wallet !== walletLc) {
+    res.status(403).json({ code: "SESSION_MISMATCH", error: "Session wallet does not match the signing wallet" });
+    return;
+  }
 
   // --- Rebuild the message server-side and verify the signature over it ---
   // Never trust a client-sent message - only the fields above, reassembled

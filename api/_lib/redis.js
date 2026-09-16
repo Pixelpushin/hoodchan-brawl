@@ -63,4 +63,46 @@ async function redisCompareAndSet(key, expected, next, ttlSeconds) {
   return Number(r) === 1;
 }
 
-module.exports = { redisCommand, redisMultiExec, redisCompareAndSet };
+// Named Lua scripts, keyed by a short name so callers (and hermetic tests -
+// see test/_helpers/fake-redis.js's CAS_SIGNATURE substring match) don't
+// need to carry the script body around. "cas" is exactly CAS_SCRIPT above
+// (redisCompareAndSet's own EVAL call is untouched, kept as its own literal
+// rather than routed through this registry, so its signature/behavior can't
+// drift by editing this object). "cdel" is compare-and-delete: only removes
+// KEYS[1] if it still holds ARGV[1] - e.g. mint-cron.js releasing its
+// mint:lock only when the lock still holds the runId that acquired it, so
+// one run's release can never clobber a later run's lock after this run
+// overran its own EX.
+// "rpushcap" makes api/rtc/signal.js's queue-length cap atomic - the old
+// LRANGE-to-count then RPUSH sequence was two round trips with no lock
+// between them, so two POSTs racing past the LRANGE at the same instant
+// could both see room under the 32-message cap and both push, exceeding it
+// (see docs/PLAN-2026-09-engine-rebuild.md's review notes). Checks LLEN and
+// pushes in the same script instead: returns -1 (queue stays untouched) once
+// KEYS[1] is already at ARGV[1] (maxLen) entries, otherwise RPUSHes ARGV[2],
+// refreshes the TTL to ARGV[3], and returns the new length.
+const RPUSHCAP_SCRIPT =
+  "local len = redis.call('LLEN', KEYS[1]) " +
+  "if len >= tonumber(ARGV[1]) then return -1 end " +
+  "redis.call('RPUSH', KEYS[1], ARGV[2]) " +
+  "redis.call('EXPIRE', KEYS[1], ARGV[3]) " +
+  "return redis.call('LLEN', KEYS[1])";
+
+const SCRIPTS = {
+  cas: CAS_SCRIPT,
+  cdel:
+    "local cur = redis.call('GET', KEYS[1]) " +
+    "if cur == ARGV[1] then redis.call('DEL', KEYS[1]) return 1 else return 0 end",
+  rpushcap: RPUSHCAP_SCRIPT,
+};
+
+// EVAL a registered script by name. `keys`/`args` are plain arrays (KEYS/ARGV
+// respectively) - this just fills in the EVAL <script> <numkeys> <keys...>
+// <args...> shape redisCommand already expects.
+async function redisEval(name, keys = [], args = []) {
+  const script = SCRIPTS[name];
+  if (!script) throw new Error(`redisEval: unknown script "${name}"`);
+  return redisCommand("EVAL", script, String(keys.length), ...keys, ...args);
+}
+
+module.exports = { redisCommand, redisMultiExec, redisCompareAndSet, redisEval, SCRIPTS };

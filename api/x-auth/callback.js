@@ -45,6 +45,24 @@ module.exports = async (req, res) => {
     return;
   }
 
+  // The session that started this flow (start.js) must still be alive -
+  // refuses a callback that arrives after the wallet session it was bound
+  // to has expired or been revoked, rather than binding an X handle to an
+  // address nothing can currently prove control of. A direct existence
+  // check (not requireSession/getSession's HMAC path) is enough here: `sid`
+  // came from our own Redis record, not from anything the caller supplied.
+  try {
+    const sessionRaw = await redisCommand("get", `sess:${saved.sid}`);
+    if (!sessionRaw) {
+      redirectTo(res, "/?xLinkError=session_expired");
+      return;
+    }
+  } catch (err) {
+    console.error("[x-auth/callback] session check", err);
+    redirectTo(res, "/?xLinkError=session_lookup_failed");
+    return;
+  }
+
   try {
     const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
     const tokenRes = await fetch("https://api.x.com/2/oauth2/token", {

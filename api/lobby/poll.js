@@ -7,9 +7,14 @@
 // Redis GET per call.
 //
 // Response shape:
-//   { status: 'waiting'|'connected'|'ready'|'complete',
+//   { status: 'waiting'|'connected'|'ready'|'complete'|...,
 //     p1: null | { present: true, tokenId } | { wallet, tokenId },
 //     p2: null | { present: true, tokenId } | { wallet, tokenId } }
+//
+// Session is OPTIONAL here (unlike create/join/complete, which require
+// one) - anyone holding the share link can poll a room's shape, just not
+// see full wallet addresses unless they prove they're one of the two
+// players.
 //
 // Wallet exposure is staged, not just field-filtered:
 //   - pre-"ready" (waiting/connected): { present: true, tokenId } only - no
@@ -19,22 +24,30 @@
 //     simply not sent yet.
 //   - "ready" and later (e.g. "complete"): wallets are revealed but
 //     truncated (0xabcd…1234) UNLESS the caller proves they're one of the
-//     two players in THIS room by sending their own wallet in the
-//     x-brawl-wallet header - matched case-insensitively against p1/p2,
-//     since anyone with the share link can poll but only the two actual
-//     players should see each other's full address.
-// Signatures and internal timestamps are never leaked to clients, at any stage.
+//     two players in THIS room by sending a valid session
+//     (Authorization: Bearer <token>, see api/_lib/auth.js) whose wallet
+//     matches p1 or p2 - the old x-brawl-wallet header (an UNPROVEN,
+//     client-asserted address) is gone; a session is cryptographically
+//     bound to a wallet via POST /api/auth/session, so this is the first
+//     version of this check that can't just be spoofed by sending someone
+//     else's address in a header.
+// The `sid` stamped onto a slot by create/join is never sent to any
+// caller, participant or not - it's an internal pointer, not player-facing
+// data. Signatures and internal timestamps are never leaked either, at any
+// stage.
 
 const { redisCommand } = require("../_lib/redis");
 const { enforceRateLimit } = require("../_lib/rate-limit");
+const { getSession } = require("../_lib/auth");
+const { TTL_BY_STATE } = require("../_lib/room");
 
 function truncateWallet(wallet) {
   return `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
 }
 
 // Builds the p1/p2 field for the response given the room's current status
-// and whether this caller has proven (via x-brawl-wallet) that they're one
-// of the two players.
+// and whether this caller has proven (via session) that they're one of the
+// two players. Never includes `sid` or `signature`, participant or not.
 function playerView(slot, status, isParticipant) {
   if (!slot) return null;
   const preReady = status === "waiting" || status === "connected";
@@ -50,7 +63,7 @@ function playerView(slot, status, isParticipant) {
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-brawl-wallet");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
   if (req.method !== "GET") { res.status(405).json({ error: "Use GET" }); return; }
   if (!(await enforceRateLimit(req, res, "poll", 600, 600))) return;
@@ -71,17 +84,18 @@ module.exports = async (req, res) => {
       res.status(502).json({ error: "Corrupted room state" }); return;
     }
     // Keep a live room alive while people are still picking: only join.js
-    // refreshed the 600s TTL, so two players deliberating for ten minutes
-    // got a 404 on READY. Completed rooms keep complete.js's longer TTL for
-    // the mint worker - never shorten those.
+    // refreshed the TTL, so two players deliberating for the full window
+    // got a 404 on READY. Terminal statuses keep their own (longer) TTL -
+    // never shorten those here.
     if (lobby.status === "waiting" || lobby.status === "connected" || lobby.status === "ready") {
-      redisCommand("EXPIRE", key, "600").catch(() => {});
+      redisCommand("EXPIRE", key, String(TTL_BY_STATE[lobby.status])).catch(() => {});
     }
 
-    const headerWallet = req.headers?.["x-brawl-wallet"];
-    const requesterWallet = typeof headerWallet === "string" ? headerWallet.toLowerCase() : null;
+    // Session is optional for poll - a missing/invalid bearer just means
+    // "not a proven participant", not a 401.
+    const session = await getSession(req);
     const isParticipant =
-      !!requesterWallet && (requesterWallet === lobby.p1?.wallet || requesterWallet === lobby.p2?.wallet);
+      !!session && (session.wallet === lobby.p1?.wallet || session.wallet === lobby.p2?.wallet);
 
     res.status(200).json({
       status: lobby.status,

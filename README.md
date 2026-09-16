@@ -36,6 +36,10 @@ python3 -m http.server 8420
 
 Then open `http://localhost:8420`. Ships with the OnChainHoodies adapter active by default (`src/adapters/index.js`) - swap the one import there to try `src/adapters/template/` instead, no API/wallet/keys needed for that one.
 
+### Tests
+
+`npm test` runs the hermetic `api/**` route suite (`node --test test/*.test.mjs`) against fake Redis/chain/HTTP helpers in `test/_helpers/` - no live network calls, safe to run anywhere. `npm run test:live` additionally exercises the real ownership check against a live RPC endpoint (`scripts/test-lobby-ownership.mjs`); pass `--offline` to that script directly to skip the live part and run only its invariant checks. Both `.github/workflows/deploy.yml` and `.github/workflows/pr.yml` run `npm test` plus the offline invariant check as a required gate before any deploy.
+
 ## Deploying
 
 Live at [fight.hoodchan.org](https://fight.hoodchan.org) - a dedicated Vercel project (separate from both hoodies-fight's and pfp-brawl's own), with `fight.hoodchan.org` as a custom domain and `VERCEL_TOKEN`/`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` set as repo secrets so [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds/attests/deploys on every push to `main` (see that file's own comments - it deliberately fails closed rather than falling back to any other project). The HOODCHAN adapter needs no API keys of its own (on-chain + public IPFS gateways only). If X account linking is wanted later, set the env vars documented below.

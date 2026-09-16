@@ -17,19 +17,38 @@ import Module, { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import crypto from "node:crypto";
+
 import { installFakeRedis } from "./_helpers/fake-redis.js";
 import { makeReq, call } from "./_helpers/http.js";
+import { mintFakeSession } from "./_helpers/fake-session.js";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// Fresh fake Redis, with api/_lib/rate-limit.js AND the target route
-// re-required against it - otherwise the route's already-cached module
-// would still hold a `redisCommand` closed over a previous test's (or no)
-// fake.
+// api/lobby/create.js and api/lobby/poll.js now require/accept a session
+// (see api/_lib/auth.js) - every test below that calls them needs
+// SESSION_SECRET set so mintFakeSession's HMAC matches what those routes
+// verify with.
+process.env.SESSION_SECRET = "test-routes-hardening-secret";
+
+function randomAddress() {
+  return `0x${crypto.randomBytes(20).toString("hex")}`;
+}
+
+// Fresh fake Redis, with api/_lib/rate-limit.js, api/_lib/auth.js,
+// api/_lib/room.js, AND the target route re-required against it -
+// otherwise any already-cached module would still hold a `redisCommand`
+// closed over a previous test's (or no) fake. auth.js/room.js matter now
+// that api/lobby/create.js and api/lobby/poll.js depend on them (session
+// gating, TTL_BY_STATE) - without busting their cache too, a session
+// minted into THIS test's fake redis would look up against a STALE fake
+// from an earlier test and never be found.
 function freshRoute(relPath) {
   const fake = installFakeRedis(require, root);
-  delete require.cache[require.resolve(path.join(root, "api/_lib/rate-limit.js"))];
+  for (const dep of ["api/_lib/rate-limit.js", "api/_lib/auth.js", "api/_lib/room.js"]) {
+    delete require.cache[require.resolve(path.join(root, dep))];
+  }
   const routePath = require.resolve(path.join(root, relPath));
   delete require.cache[routePath];
   const handler = require(routePath);
@@ -85,16 +104,24 @@ function makeStreamReq({ method = "POST", headers = {}, chunks = [] } = {}) {
   };
 }
 
-const reqFrom = (ip, extra = {}) =>
-  makeReq({ headers: { "x-vercel-forwarded-for": ip }, ...extra });
+const reqFrom = (ip, { headers = {}, ...extra } = {}) =>
+  makeReq({ headers: { "x-vercel-forwarded-for": ip, ...headers }, ...extra });
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 // --- lobby/create ---------------------------------------------------------
 
-test("lobby/create stamps the room with adapter + a uint32 seed", async () => {
+test("lobby/create requires a session (401 UNAUTHENTICATED)", async () => {
+  const { handler } = freshRoute("api/lobby/create.js");
+  const res = await call(handler, reqFrom("10.0.0.0"));
+  assert.equal(res.status, 401);
+  assert.equal(res.body.code, "UNAUTHENTICATED");
+});
+
+test("lobby/create stamps the room with adapter + a uint32 seed, p1 from the session", async () => {
   const { handler, fake } = freshRoute("api/lobby/create.js");
-  const res = await call(handler, reqFrom("10.0.0.1"));
+  const session = mintFakeSession(fake, { wallet: randomAddress(), tokenId: 7 });
+  const res = await call(handler, reqFrom("10.0.0.1", { headers: { authorization: `Bearer ${session.token}` } }));
   assert.equal(res.status, 200);
   const { roomCode } = res.body;
   const stored = JSON.parse(fake.store.get(`lobby:${roomCode}`).value);
@@ -102,18 +129,39 @@ test("lobby/create stamps the room with adapter + a uint32 seed", async () => {
   assert.equal(typeof stored.seed, "number");
   assert.ok(Number.isInteger(stored.seed));
   assert.ok(stored.seed >= 0 && stored.seed <= 0xffffffff, "seed must fit a uint32");
+  assert.equal(stored.p1.wallet, session.wallet);
+  assert.equal(stored.p1.tokenId, 7);
 });
 
 test("lobby/create 429s on the 11th call from one IP within the window", async () => {
-  const { handler } = freshRoute("api/lobby/create.js");
+  const { handler, fake } = freshRoute("api/lobby/create.js");
   const ip = "10.0.0.2";
   for (let i = 0; i < 10; i++) {
-    const res = await call(handler, reqFrom(ip));
+    // A distinct wallet per call - otherwise the per-wallet rooms:open cap
+    // (max 2/hour, see api/lobby/create.js) would 429 first and this
+    // wouldn't be testing the IP rate limit at all.
+    const session = mintFakeSession(fake, { wallet: randomAddress(), tokenId: i + 1 });
+    const res = await call(handler, reqFrom(ip, { headers: { authorization: `Bearer ${session.token}` } }));
     assert.equal(res.status, 200, `call ${i + 1} of 10 should succeed`);
   }
-  const denied = await call(handler, reqFrom(ip));
+  const lastSession = mintFakeSession(fake, { wallet: randomAddress(), tokenId: 99 });
+  const denied = await call(handler, reqFrom(ip, { headers: { authorization: `Bearer ${lastSession.token}` } }));
   assert.equal(denied.status, 429);
   assert.ok(Number(denied.headers["Retry-After"]) > 0);
+});
+
+test("lobby/create 429s (ROOM_CAP) on the 3rd room from the same wallet within the hour", async () => {
+  const { handler, fake } = freshRoute("api/lobby/create.js");
+  const wallet = randomAddress();
+  for (let i = 0; i < 2; i++) {
+    const session = mintFakeSession(fake, { wallet, tokenId: 1 });
+    const res = await call(handler, reqFrom(`10.0.1.${i}`, { headers: { authorization: `Bearer ${session.token}` } }));
+    assert.equal(res.status, 200, `room ${i + 1} of 2 should succeed`);
+  }
+  const session3 = mintFakeSession(fake, { wallet, tokenId: 1 });
+  const denied = await call(handler, reqFrom("10.0.1.9", { headers: { authorization: `Bearer ${session3.token}` } }));
+  assert.equal(denied.status, 429);
+  assert.equal(denied.body.code, "ROOM_CAP");
 });
 
 // --- lobby/poll -------------------------------------------------------------
@@ -152,9 +200,31 @@ test("lobby/poll truncates wallets at ready for a non-participant caller", async
   assert.equal(res.body.p2.wallet, "0xbbbb…bbbb");
 });
 
-test("lobby/poll reveals full wallets to a proven participant (case-insensitive header)", async () => {
+test("lobby/poll reveals full wallets to a proven participant (session, not the removed x-brawl-wallet header)", async () => {
   const { handler, fake } = freshRoute("api/lobby/poll.js");
   await seedLobby(fake, "CCC333", {
+    status: "ready",
+    p1: { wallet: P1_WALLET, tokenId: 1, joinedAt: 1 },
+    p2: { wallet: P2_WALLET, tokenId: 2, joinedAt: 2 },
+  });
+  const session = mintFakeSession(fake, { wallet: P1_WALLET, tokenId: 1 });
+  const res = await call(
+    handler,
+    makeReq({
+      method: "GET",
+      query: { roomCode: "CCC333" },
+      headers: { authorization: `Bearer ${session.token}` },
+    }),
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.body.p1.wallet, P1_WALLET);
+  assert.equal(res.body.p2.wallet, P2_WALLET);
+  assert.equal(res.body.p1.sid, undefined, "sid must never be exposed to poll callers, even participants");
+});
+
+test("lobby/poll: the OLD x-brawl-wallet header no longer proves participation (truncated wallets)", async () => {
+  const { handler, fake } = freshRoute("api/lobby/poll.js");
+  await seedLobby(fake, "DDD444", {
     status: "ready",
     p1: { wallet: P1_WALLET, tokenId: 1, joinedAt: 1 },
     p2: { wallet: P2_WALLET, tokenId: 2, joinedAt: 2 },
@@ -163,13 +233,13 @@ test("lobby/poll reveals full wallets to a proven participant (case-insensitive 
     handler,
     makeReq({
       method: "GET",
-      query: { roomCode: "CCC333" },
+      query: { roomCode: "DDD444" },
       headers: { "x-brawl-wallet": P1_WALLET.toUpperCase() },
     }),
   );
   assert.equal(res.status, 200);
-  assert.equal(res.body.p1.wallet, P1_WALLET);
-  assert.equal(res.body.p2.wallet, P2_WALLET);
+  assert.notEqual(res.body.p1.wallet, P1_WALLET);
+  assert.equal(res.body.p1.wallet, "0xaaaa…aaaa");
 });
 
 // --- share-upload -----------------------------------------------------------

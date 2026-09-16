@@ -55,6 +55,23 @@ function getContract(provider) {
   return new ethers.Contract(address, SOULBOUND_ABI, wallet);
 }
 
+// Memoized minter address, derived from MINTER_PRIVATE_KEY without touching
+// the network. api/mint-cron.js writes this to Redis (mint:minter:address)
+// once per run so api/status.js can report the minter's address/balance
+// without ever loading the private key itself. Memoized because
+// ethers.Wallet's key derivation is the same cost every call and this key
+// never changes mid-process; a bad/missing key throws (never returns a
+// stale/blank address) and is NOT cached, so a later fix to the env var
+// (or a first successful call after cold start) works without a restart.
+let cachedMinterAddress = null;
+function getMinterAddress() {
+  if (cachedMinterAddress) return cachedMinterAddress;
+  const key = process.env.MINTER_PRIVATE_KEY;
+  if (!key) throw new Error("MINTER_PRIVATE_KEY not set");
+  cachedMinterAddress = new ethers.Wallet(key).address;
+  return cachedMinterAddress;
+}
+
 /**
  * Compute the ERC-6551 TBA address for a HOODCHAN token.
  * The salt is always bytes32(0) — same convention used across all
@@ -75,9 +92,15 @@ async function computeTba(provider, tokenId) {
  * Mint a soulbound match record for a completed match.
  * Tokens go to each fighter's TBA, not the owner's EOA.
  *
- * @param {string} wallet1       - NFT owner wallet for player 1 (used for pairHash only)
+ * @deprecated wallet1/wallet2 - the contract call path only ever uses each
+ *   token's computed TBA (tba1/tba2) for both the pairHash dedup check and
+ *   the mint recipient; these two params are accepted for call-site
+ *   compatibility (api/mint-cron.js, api/ai-match-complete.js's queued entry
+ *   shape) but are not read here. Slated for removal once every caller stops
+ *   passing them.
+ * @param {string} wallet1       - unused, see @deprecated above
  * @param {number|bigint} nft1   - token ID of player 1's NFT
- * @param {string} wallet2       - NFT owner wallet for player 2
+ * @param {string} wallet2       - unused, see @deprecated above
  * @param {number|bigint} nft2   - token ID of player 2's NFT
  * @returns {Promise<{txHash: string, alreadyMinted: boolean}>}
  */
@@ -105,4 +128,4 @@ async function mintMatchRecord(wallet1, nft1, wallet2, nft2) {
   return { txHash: receipt.hash, alreadyMinted: false, tba1, tba2 };
 }
 
-module.exports = { mintMatchRecord, computeTba };
+module.exports = { mintMatchRecord, computeTba, getMinterAddress };

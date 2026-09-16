@@ -17,6 +17,9 @@ const path = require("node:path");
 // calls whose script contains this exact substring are treated as the
 // compare-and-set primitive, not run through a real Lua interpreter.
 const CAS_SIGNATURE = "redis.call('GET', KEYS[1])";
+// api/_lib/redis.js's "rpushcap" script fingerprint (LLEN-check-then-RPUSH,
+// atomic queue-length cap - see api/rtc/signal.js).
+const RPUSHCAP_SIGNATURE = "redis.call('LLEN', KEYS[1])";
 
 function createFakeRedis() {
   const store = new Map(); // key -> { type, value, expiresAt: ms|null }
@@ -80,6 +83,15 @@ function createFakeRedis() {
       return 1;
     }
     return 0;
+  }
+
+  // --- the "rpushcap" script api/rtc/signal.js's redisEval() calls ---
+  function runRpushCap(key, maxLen, value, ttlSec) {
+    const l = list(key); // existing array ref, or a fresh [] for a new key
+    if (l.length >= Number(maxLen)) return -1;
+    l.push(value);
+    store.set(key, { type: "list", value: l, expiresAt: Date.now() + Number(ttlSec) * 1000 });
+    return l.length;
   }
 
   async function redisCommand(cmd, ...rawArgs) {
@@ -270,7 +282,14 @@ function createFakeRedis() {
           // redisCompareAndSet's script: KEYS[1]=key, ARGV = [expected, next, ttl]
           return runCas(keys[0], argv[0], argv[1], argv[2]);
         }
-        throw new Error("fake redis: EVAL script not recognized (only the CAS script is emulated)");
+        if (String(script).includes(RPUSHCAP_SIGNATURE)) {
+          const n = Number(numkeys);
+          const keys = rest.slice(0, n);
+          const argv = rest.slice(n);
+          // rpushcap script: KEYS[1]=key, ARGV = [maxLen, value, ttlSec]
+          return runRpushCap(keys[0], argv[0], argv[1], argv[2]);
+        }
+        throw new Error("fake redis: EVAL script not recognized (only cas/cdel/rpushcap are emulated)");
       }
       default:
         throw new Error(`fake redis: unhandled command ${cmd}`);
@@ -291,7 +310,21 @@ function createFakeRedis() {
     return runCas(key, expected ?? "", next, ttlSeconds) === 1;
   }
 
-  return { redisCommand, redisMultiExec, redisCompareAndSet, store, failNext };
+  // Mirrors api/_lib/redis.js's redisEval(name, keys, args) - resolves a
+  // script NAME to script text carrying the right signature, then routes
+  // through the same EVAL dispatch above, so a route under test needs zero
+  // awareness it's talking to the fake either way. Test files that need
+  // "cdel"'s real compare-and-delete semantics (not just "does this
+  // substring match the CAS emulation") patch their own redisEval onto this
+  // fake's exports instead (see test/mint-cron.test.mjs) - this generic
+  // version is enough for "cas" and "rpushcap".
+  async function redisEval(name, keys = [], args = []) {
+    const script = { cas: CAS_SIGNATURE, cdel: CAS_SIGNATURE, rpushcap: RPUSHCAP_SIGNATURE }[name];
+    if (!script) throw new Error(`fake redis: unknown script "${name}"`);
+    return redisCommand("EVAL", script, String(keys.length), ...keys, ...args);
+  }
+
+  return { redisCommand, redisMultiExec, redisCompareAndSet, redisEval, store, failNext };
 }
 
 // Installs a fake into require.cache for api/_lib/redis.js, exactly the
@@ -308,6 +341,7 @@ function installFakeRedis(require, repoRoot) {
       redisCommand: fake.redisCommand,
       redisMultiExec: fake.redisMultiExec,
       redisCompareAndSet: fake.redisCompareAndSet,
+      redisEval: fake.redisEval,
     },
   };
   return fake;

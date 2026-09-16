@@ -2,7 +2,7 @@ import { activeAdapter } from "./adapters/index.js";
 import { Fighter, ARCHETYPES, RARE_TRAIT_HEALTH_BONUS, CANVAS_WIDTH, CANVAS_HEIGHT } from "./fighter.js";
 import { createGame } from "./game.js";
 import { initSound, playSound, playRandomTrack, stopMusic, getAudioCtx } from "./sound.js";
-import { initLobby, initCommunityBar, lobbyComplete, closeLobby, lobbyRegisterFighter, lobbyResumePolling } from "./lobby.js";
+import { initLobby, initCommunityBar, lobbyComplete, closeLobby, lobbyRegisterFighter, lobbyResumePolling, startLobbyHeartbeat } from "./lobby.js";
 import { showMintCelebration } from "./mint-celebration.js";
 import { pickRandomArena, drawArena, drawFighter, drawFlash } from "./body.js";
 import { speakTaunt } from "./tts.js";
@@ -62,6 +62,10 @@ initLobby({
       closeLobby();
       await _walletResume.catch(() => {});
       await enterSelectScreen(_walletTokenIds);
+      // Liveness ping for this room (see api/match/heartbeat.js) - starts
+      // once this device reaches fighter select, stops on lobby close or
+      // match completion (see src/lobby.js's closeLobby/lobbyComplete).
+      startLobbyHeartbeat();
     }
     if (lobbyState?.status === "ready") {
       // Both wallets registered. The opponent is whatever THEY registered on
