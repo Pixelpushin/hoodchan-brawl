@@ -8,7 +8,7 @@ import { pickRandomArena, drawArena, drawFighter, drawFlash } from "./body.js";
 import { speakTaunt } from "./tts.js";
 import { connectWallet, hasInjectedWallet, getConnectedAccount, disconnectWallet } from "./wallet.js";
 import { initBloodCode } from "./blood-code.js";
-import { fetchFighterStats } from "./api.js";
+import { fetchFighterStats, submitAiMatchComplete } from "./api.js";
 import { initGamepadDebugOverlay } from "./gamepad.js";
 import { initGamepadNav } from "./gamepad-nav.js";
 import { renderKOShareCard, shareKOImage, castKOImage } from "./share-card.js";
@@ -1002,16 +1002,46 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
 
     const winnerId = matchWinner.data.verified ? matchWinner.data.tokenId : null;
     const loserId = matchLoser.data.verified ? matchLoser.data.tokenId : null;
-    // PVP lobby: lobbyComplete records result + cleans up room atomically.
+    // PVP lobby: lobbyComplete signs + submits this side's result and awaits
+    // the server's verdict (both players must submit and agree - see
+    // api/lobby/complete.js) before we tell the player anything about a mint.
     if (_pvpMode && _pvpRoomCode) {
-      lobbyComplete({ roomCode: _pvpRoomCode, winnerId, loserId, p1Score: wins.p1, p2Score: wins.p2, roundsPlayed: roundNum });
+      const walletAddress = await getConnectedAccount().catch(() => null);
+      let resultStatus = "error";
+      if (walletAddress) {
+        // wins.p1/wins.p2 are always THIS BROWSER'S OWN score vs the
+        // opponent's - p1 here means "the local player" (see selectFighter's
+        // panelState.p1, which is always this device's own fighter),
+        // regardless of which lobby side (room p1 or room p2) this browser
+        // occupies. api/lobby/complete.js's p1Score/p2Score fields, and its
+        // agree check, are keyed to the ROOM's p1 vs p2 instead - remap
+        // local->room here so the guest's own score lands in p2Score (their
+        // actual room slot) rather than overwriting what p1Score is supposed
+        // to mean. When _pvpSide is "p1" (the host) the two already match.
+        const roomP1Score = _pvpSide === "p2" ? wins.p2 : wins.p1;
+        const roomP2Score = _pvpSide === "p2" ? wins.p1 : wins.p2;
+        const outcome = await lobbyComplete({
+          roomCode: _pvpRoomCode,
+          winnerId,
+          loserId,
+          p1Score: roomP1Score,
+          p2Score: roomP2Score,
+          roundsPlayed: roundNum,
+          wallet: walletAddress,
+        });
+        if (outcome.recorded) resultStatus = "queued";
+        else if (outcome.disputed) resultStatus = "disputed";
+        else if (outcome.waitingFor) resultStatus = "waiting";
+        else resultStatus = "error";
+      }
       await showMintCelebration({
         winnerName: matchWinner.data.name,
         loserName: matchLoser.data.name,
         wins,
         matchCanvas: canvas,
         audioCtx: getAudioCtx(),
-        walletAddress: await getConnectedAccount().catch(() => null),
+        walletAddress,
+        resultStatus,
       });
     } else if (winnerId !== null || loserId !== null) {
       // vs-AI: record stats + enqueue soulbound mint for both verified fighters
@@ -1020,18 +1050,19 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
       const p1Wallet = p1.data.verified ? p1.data.ownerAddress : null;
       const p2Wallet = p2.data.verified ? p2.data.ownerAddress : null;
       if (p1Wallet && p2Wallet && p1.data.tokenId != null && p2.data.tokenId != null) {
-        fetch("/api/ai-match-complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            wallet1: p1Wallet,
-            nft1: p1.data.tokenId,
-            wallet2: p2Wallet,
-            nft2: p2.data.tokenId,
-            winnerId,
-            adapter: "hoodchan",
-          }),
-        }).catch(() => {});
+        // Awaited and mapped to an honest resultStatus, same as the PVP
+        // branch above - this used to fire-and-forget and then always show
+        // the queued/minted celebration regardless of what actually
+        // happened server-side (cap hit, duplicate pairing, Redis outage
+        // all still said "SOULBOUND MINTED").
+        const resultStatus = await submitAiMatchComplete({
+          wallet1: p1Wallet,
+          nft1: p1.data.tokenId,
+          wallet2: p2Wallet,
+          nft2: p2.data.tokenId,
+          winnerId,
+          adapter: "hoodchan",
+        });
         await showMintCelebration({
           winnerName: matchWinner.data.name,
           loserName: matchLoser.data.name,
@@ -1039,6 +1070,7 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
           matchCanvas: canvas,
           audioCtx: getAudioCtx(),
           walletAddress: await getConnectedAccount().catch(() => null),
+          resultStatus,
         });
       }
     }

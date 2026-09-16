@@ -1,11 +1,12 @@
 const { redisCommand } = require("../../_lib/redis");
-const { rivalryKey, MAX_TOKEN_ID, isValidAdapterKey, LEGACY_ADAPTER_KEY } = require("../../_lib/stats-keys");
+const { rivalryKey, MAX_TOKEN_ID, isValidAdapterKey, DEFAULT_ADAPTER_KEY } = require("../../_lib/stats-keys");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   const a = Number(req.query.tokenIdA);
   const b = Number(req.query.tokenIdB);
-  const adapterKey = req.query.adapter === undefined ? LEGACY_ADAPTER_KEY : req.query.adapter;
+  // Must match every writer's default - see api/leaderboard.js's comment.
+  const adapterKey = req.query.adapter === undefined ? DEFAULT_ADAPTER_KEY : req.query.adapter;
 
   if (!isValidAdapterKey(adapterKey)) {
     res.status(400).json({ error: "adapter must match /^[a-z0-9-]{1,64}$/" });

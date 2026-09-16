@@ -2,6 +2,13 @@
   "name": "hoodchan-brawl",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:live": "node scripts/test-lobby-ownership.mjs"
+  },
   "dependencies": {
     "@vercel/blob": "^0.27.0",
     "ethers": "^6.13.0"

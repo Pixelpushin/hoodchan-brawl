@@ -23,8 +23,17 @@
 // and is what makes this genuinely fast rather than just "eventually
 // works." See ADAPTERS.md for how to set one up for your own collection -
 // two env vars, no code changes needed.
+const { enforceRateLimit } = require("./_lib/rate-limit");
+
 const PINATA_GATEWAY_DOMAIN = process.env.PINATA_GATEWAY_DOMAIN;
 const PINATA_GATEWAY_TOKEN = process.env.PINATA_GATEWAY_TOKEN;
+
+// CIDv0 (Qm... base58, always 46 chars) or CIDv1 (b... base32), plus an
+// optional /-separated subpath - matches what src/adapters/hoodchan/chain.js
+// actually builds for ipfsProxyUrl. Rejecting anything else here keeps this
+// route from being usable as an open proxy to arbitrary upstream URLs (the
+// path is otherwise handed straight to each gateway template below).
+const CID_PATH_PATTERN = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})(\/[\w.\-%]+)*$/;
 
 function dedicatedGateway(p) {
   if (!PINATA_GATEWAY_DOMAIN || !PINATA_GATEWAY_TOKEN) return null;
@@ -72,6 +81,7 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Use GET" });
     return;
   }
+  if (!(await enforceRateLimit(req, res, "ipfs", 300, 600))) return;
 
   // Node/Vercel already URL-decodes query values, so this arrives as the
   // real CID + subpath (with real slashes) - the client encodeURIComponent's
@@ -81,6 +91,21 @@ module.exports = async (req, res) => {
   const cidPath = typeof req.query.path === "string" ? req.query.path : "";
   if (!cidPath) {
     res.status(400).json({ error: "Missing ?path=<cid>/<subpath>" });
+    return;
+  }
+  if (!CID_PATH_PATTERN.test(cidPath)) {
+    res.status(400).json({ error: "path must be a CIDv0 or CIDv1 (optionally with a subpath)" });
+    return;
+  }
+  // CID_PATH_PATTERN's subpath class ([\w.\-%]+) matches "." and ".." as
+  // whole segments - fetch()/WHATWG URL then normalizes those away before
+  // the gateway ever sees them, turning "<cid>/../../../secret" into a
+  // request for an arbitrary path on the gateway host (and, worse, still
+  // carrying PINATA_GATEWAY_TOKEN on the dedicated-gateway branch). Reject
+  // any dot-only segment outright so this route can only ever address
+  // something actually under /ipfs/<cid>/.
+  if (cidPath.split("/").some((seg) => seg === "." || seg === "..")) {
+    res.status(400).json({ error: "path must not contain . or .. segments" });
     return;
   }
 

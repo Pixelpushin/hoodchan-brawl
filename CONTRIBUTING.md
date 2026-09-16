@@ -24,7 +24,11 @@ Open `http://localhost:8420`. Edit a file, refresh the tab - that's the whole lo
 - Bug fixes - if something looks wrong in a fight, it probably is
 - Accessibility, mobile/touch controls, remappable keys
 
-Please don't open a PR for wallet-write functionality, wagering, or anything that puts real value at stake - this game intentionally stays read-only on-chain.
+No player-side wallet writes: players never sign a transaction or hold gas, only `eth_requestAccounts`/chain-switch (`src/wallet.js`) and, for result submission, off-chain EIP-191 message signing. Please don't open a PR that has a player sign or send a transaction, or that adds wagering/anything that puts real value at stake directly in a player's hands.
+
+The one thing that *does* go on-chain - minting a soulbound match-record NFT - is entirely operator-side: it runs from an operator-held key (`MINTER_PRIVATE_KEY`) through `api/_lib/mint.js` and the cron entrypoint `api/mint-cron.js`, never from the browser. If you're touching the mint pipeline, read `docs/PLAN-2026-09-engine-rebuild.md` first - money-adjacent routes (`api/ai-match-complete.js`, `api/lobby/complete.js`) are actively being hardened (ownership checks, idempotency, signed results) and PRs there need to fit that plan, not work around it.
+
+Run `npm test` before opening a PR (`node --test test/*.test.mjs` - hermetic tests, no live network/Redis/chain calls). `npm run test:live` (`scripts/test-lobby-ownership.mjs`) hits the real RPC and is optional/manual, not part of the required check.
 
 ## Code conventions
 

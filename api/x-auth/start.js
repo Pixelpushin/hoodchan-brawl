@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { redisCommand } = require("../_lib/redis");
+const { enforceRateLimit } = require("../_lib/rate-limit");
 
 // Plenty of time for a visitor to actually get through X's consent screen,
 // short enough that an abandoned attempt doesn't linger in Redis forever.
@@ -18,6 +19,7 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Use GET" });
     return;
   }
+  if (!(await enforceRateLimit(req, res, "x-auth/start", 5, 600))) return;
 
   const address = typeof req.query.address === "string" ? req.query.address.toLowerCase() : "";
   if (!/^0x[0-9a-f]{40}$/.test(address)) {

@@ -5,11 +5,18 @@
 //         -> poll GET /api/lobby/poll?roomCode=... every 2s until status=ready
 //   Guest: paste roomCode -> POST /api/lobby/join -> poll same endpoint
 //   Both:  onMatchReady fires -> main.js tears down modal, enters select screen
-//   On match end: lobbyComplete -> POST /api/lobby/complete
+//   On match end: lobbyComplete signs a result attestation with the caller's
+//                 wallet and awaits POST /api/lobby/complete. Both players'
+//                 clients call this independently; the server only finalizes
+//                 the match once both signed submissions agree (see
+//                 api/lobby/complete.js) - lobbyComplete's return value tells
+//                 the caller which of those states it landed in.
 //
 // Community bar:
 //   initCommunityBar fetches GET /api/bar once, renders progress + milestones.
 //   Handles 404/network errors gracefully (shows 0, doesn't throw).
+
+import { signMessage } from "./wallet.js";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -35,8 +42,22 @@ export function initLobby({ onMatchReady, onLobbyError } = {}) {
 
   if (!remotePvpBtn || !lobbyModal) return;
 
+  // GATED until real netcode ships. The lobby exchanges fighters correctly,
+  // but the match itself is still two separate local sims (game.js reads P2
+  // from the local keys) - that is not a real or fair PVP match, so the
+  // button is hidden and share links are ignored unless the page is opened
+  // with ?pvp=1 (testing the lobby flow). Share links carry the flag along.
+  const params = new URLSearchParams(window.location.search);
+  // params.has("pvp") alone also unlocks this for ?pvp=0 or a bare ?pvp= -
+  // the flag is specifically "1" everywhere else it's set (see the share
+  // link and history.pushState below), so check the value, not just presence.
+  if (params.get("pvp") !== "1") {
+    remotePvpBtn.hidden = true;
+    return;
+  }
+
   // Auto-join if URL contains ?room=XXXXXX — guest just clicked a share link.
-  const urlRoom = new URLSearchParams(window.location.search).get("room");
+  const urlRoom = params.get("room");
   if (urlRoom) {
     _resetLobbyUI();
     lobbyModal.classList.remove("hidden");
@@ -151,15 +172,57 @@ export function lobbyResumePolling() {
   if (_pollRoomCode) _startPolling(_pollRoomCode, _pollSide ?? "p1");
 }
 
-// Called from main.js when match ends.
-export function lobbyComplete({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed }) {
-  // Fire and forget - match is over, we just clean up server state.
-  fetch("/api/lobby/complete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed }),
-  }).catch((err) => console.warn("[lobby] complete call failed", err));
+// Builds the exact message the caller's wallet signs and api/lobby/complete.js
+// re-derives server-side to verify it - both sides MUST produce identical
+// bytes for the same inputs (see test/lobby-complete.test.mjs's cross-check
+// against the server's copy of this same builder). winnerId/loserId of
+// null render as the literal word "none", never omitted or left as "null".
+export function buildResultMessage({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet, issuedAt }) {
+  const winnerLabel = winnerId === null || winnerId === undefined ? "none" : winnerId;
+  const loserLabel = loserId === null || loserId === undefined ? "none" : loserId;
+  return [
+    "HOODCHAN Brawl result",
+    `room: ${String(roomCode).toUpperCase()}`,
+    `winner: HOODCHAN #${winnerLabel}`,
+    `loser: HOODCHAN #${loserLabel}`,
+    `score: ${p1Score}-${p2Score} in ${roundsPlayed}`,
+    `address: ${wallet}`,
+    `issued: ${issuedAt}`,
+  ].join("\n");
+}
+
+// Called from main.js when match ends. Signs a result attestation with
+// `wallet` and awaits the server's verdict instead of firing-and-forgetting -
+// the caller needs to know whether this match actually got recorded before
+// it tells the player anything about a mint (see mint-celebration.js's
+// resultStatus). Returns { recorded, disputed?, waitingFor? } on a real
+// server response, or { recorded: false, error } if signing or the request
+// itself failed (no wallet connected, user rejected the signature, network
+// error, etc).
+export async function lobbyComplete({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet }) {
   _stopPolling();
+  const issuedAt = new Date().toISOString();
+  const message = buildResultMessage({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet, issuedAt });
+  try {
+    const signature = await signMessage(wallet, message);
+    const res = await fetch("/api/lobby/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet, issuedAt, signature }),
+    });
+    const responseBody = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { recorded: false, error: responseBody.error || `status ${res.status}` };
+    }
+    return {
+      recorded: !!responseBody.recorded,
+      disputed: !!responseBody.disputed,
+      waitingFor: responseBody.waitingFor ?? null,
+    };
+  } catch (err) {
+    console.warn("[lobby] complete call failed", err);
+    return { recorded: false, error: err?.message || "Couldn't record the result." };
+  }
 }
 
 // ===== Internal lobby UI helpers =====
@@ -210,8 +273,8 @@ function _showLobbyWaiting(roomCode) {
   // Show the room code and push it into the URL so the host can copy/share.
   const codeEl = document.getElementById("lobby-room-code");
   if (codeEl) codeEl.textContent = roomCode;
-  const shareUrl = `${location.origin}${location.pathname}?room=${roomCode}`;
-  history.pushState({}, "", `?room=${roomCode}`);
+  const shareUrl = `${location.origin}${location.pathname}?pvp=1&room=${roomCode}`;
+  history.pushState({}, "", `?pvp=1&room=${roomCode}`);
 
   const statusEl = document.getElementById("lobby-wait-status");
   if (statusEl) statusEl.textContent = "Waiting for opponent...";

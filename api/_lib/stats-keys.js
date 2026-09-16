@@ -10,7 +10,14 @@
 // never collide in the same key.
 const LEGACY_ADAPTER_KEY = "onchainhoodies";
 
-function statsKeys(adapterKey, tokenId) {
+// Fallback adapter for routes that don't get an explicit adapter from the
+// client (e.g. api/lobby/complete.js, whose lobby records predate the
+// adapter field) - a deployment can pin its own default via ADAPTER_KEY so a
+// hoodchan-only fork's PVP stats land under "hoodchan" instead of silently
+// aliasing onto the legacy onchainhoodies keys nobody there reads.
+const DEFAULT_ADAPTER_KEY = process.env.ADAPTER_KEY || LEGACY_ADAPTER_KEY;
+
+function statsKeys(adapterKey = DEFAULT_ADAPTER_KEY, tokenId) {
   if (adapterKey === LEGACY_ADAPTER_KEY) {
     return { wins: `hoodie:${tokenId}:wins`, losses: `hoodie:${tokenId}:losses` };
   }
@@ -20,7 +27,7 @@ function statsKeys(adapterKey, tokenId) {
   };
 }
 
-function recentMatchesKey(adapterKey) {
+function recentMatchesKey(adapterKey = DEFAULT_ADAPTER_KEY) {
   return adapterKey === LEGACY_ADAPTER_KEY ? "matches:recent" : `matches:recent:${adapterKey}`;
 }
 
@@ -32,7 +39,7 @@ function recentMatchesKey(adapterKey) {
 // same hash key regardless of which fighter was p1 vs p2 in a given match;
 // hash fields are the token IDs themselves (win count for that ID within
 // this pairing), so HMGET on the two IDs reads both sides at once.
-function rivalryKey(adapterKey, tokenIdA, tokenIdB) {
+function rivalryKey(adapterKey = DEFAULT_ADAPTER_KEY, tokenIdA, tokenIdB) {
   const lower = Math.min(tokenIdA, tokenIdB);
   const higher = Math.max(tokenIdA, tokenIdB);
   return `rivalry:${adapterKey}:${lower}:${higher}`;
@@ -40,7 +47,7 @@ function rivalryKey(adapterKey, tokenIdA, tokenIdB) {
 
 // Sorted set, score = win count, so ZREVRANGE...WITHSCORES gives a ranked
 // leaderboard in one round trip instead of scanning every stats:*:wins key.
-function leaderboardKey(adapterKey) {
+function leaderboardKey(adapterKey = DEFAULT_ADAPTER_KEY) {
   return `leaderboard:${adapterKey}:wins`;
 }
 
@@ -68,4 +75,5 @@ module.exports = {
   MAX_TOKEN_ID,
   isValidAdapterKey,
   LEGACY_ADAPTER_KEY,
+  DEFAULT_ADAPTER_KEY,
 };

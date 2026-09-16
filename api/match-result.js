@@ -1,4 +1,5 @@
 const { redisCommand } = require("./_lib/redis");
+const { enforceRateLimit } = require("./_lib/rate-limit");
 const {
   statsKeys,
   recentMatchesKey,
@@ -29,6 +30,7 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Use POST" });
     return;
   }
+  if (!(await enforceRateLimit(req, res, "match-result", 60, 600))) return;
 
   const { tokenId, opponentTokenId, result, adapter } = req.body || {};
   const id = Number(tokenId);

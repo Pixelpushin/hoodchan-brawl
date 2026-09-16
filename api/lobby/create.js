@@ -9,8 +9,19 @@
 // we never overwrite an active room.
 
 const { redisCommand } = require("../_lib/redis");
+const { enforceRateLimit } = require("../_lib/rate-limit");
+const { DEFAULT_ADAPTER_KEY } = require("../_lib/stats-keys");
 
 const LOBBY_TTL_SECONDS = 600; // 10 minutes
+
+// uint32 seed for the future deterministic-engine work (server-authoritative
+// RNG) - generated once at room creation so both clients can eventually
+// derive the same match from it instead of trusting either client's own Math.random.
+function generateSeed() {
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return arr[0];
+}
 
 function generateRoomCode() {
   // 6 uppercase alphanumeric chars, URL-safe and easy to read/type.
@@ -30,6 +41,7 @@ module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
   if (req.method !== "POST") { res.status(405).json({ error: "Use POST" }); return; }
+  if (!(await enforceRateLimit(req, res, "create", 10, 600))) return;
 
   try {
     // Try up to 5 codes to avoid the (vanishingly rare) collision.
@@ -43,7 +55,14 @@ module.exports = async (req, res) => {
         // p1 is claimed by the creator immediately (pre-wallet) so a guest's
         // side-less auto-join (see lobby.js's _autoJoin) can't land in p1 too -
         // see join.js's occupancy-based slot assignment, which this depends on.
-        JSON.stringify({ status: "waiting", p1: { joinedAt: Date.now() }, p2: null, createdAt: Date.now() }),
+        JSON.stringify({
+          status: "waiting",
+          p1: { joinedAt: Date.now() },
+          p2: null,
+          createdAt: Date.now(),
+          adapter: DEFAULT_ADAPTER_KEY,
+          seed: generateSeed(),
+        }),
         "EX",
         String(LOBBY_TTL_SECONDS),
         "NX",

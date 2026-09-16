@@ -106,6 +106,23 @@ export async function getConnectedAccount() {
   }
 }
 
+// Signs `message` (plain UTF-8 text, not pre-hashed) with EIP-191
+// personal_sign from `address` - used for the match-result attestation
+// api/lobby/complete.js verifies server-side (see src/lobby.js's
+// buildResultMessage). params order is [message, address] per the
+// personal_sign spec; MetaMask and other injected wallets show the message
+// text itself in the signing prompt when it's passed as a string like this,
+// so players can see exactly what they're attesting to.
+export async function signMessage(address, message) {
+  if (!hasInjectedWallet()) {
+    throw new Error("No wallet found - install MetaMask, Rabby, or another browser wallet extension.");
+  }
+  return window.ethereum.request({
+    method: "personal_sign",
+    params: [message, address],
+  });
+}
+
 export function onAccountsChanged(callback) {
   if (!hasInjectedWallet()) return () => {};
   window.ethereum.on("accountsChanged", callback);

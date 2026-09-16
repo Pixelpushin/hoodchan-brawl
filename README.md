@@ -2,9 +2,13 @@
 
 ![HOODCHAN Brawl logo](assets/branding/logo.png)
 
-A browser fighting game for holders of the [HOODCHAN](https://opensea.io/collection/h00dchan) collection — pick an Anon (or connect a wallet and fight as one you actually hold), their real art becomes the fighter's head, and one of 4 fixed archetypes (Builder/Flipper/Hodler/Collector) drives their stats and special attack. No wallet writes, no wagering, nothing on-chain from this game itself — purely social.
+A browser fighting game for holders of the [HOODCHAN](https://opensea.io/collection/h00dchan) collection — pick an Anon (or connect a wallet and fight as one you actually hold), their real art becomes the fighter's head, and one of 4 fixed archetypes (Builder/Flipper/Hodler/Collector) drives their stats and special attack. Players never send a transaction or sign anything money-moving — but a completed match **does** go on-chain: the operator's minter key mints a soulbound (EIP-5192-style) ERC-721 match record to each fighter's ERC-6551 token-bound account. See "This project's own API" below for the honest trust model.
 
-Play: [brawl.hoodchan.org](https://brawl.hoodchan.org)
+Play: [fight.hoodchan.org](https://fight.hoodchan.org)
+
+## Status
+
+Remote PVP (the lobby / room-code flow) currently exchanges fighters between two devices but **does not sync the match itself** — each device runs its own local simulation and whichever device's `/api/lobby/complete` call lands first is recorded as the result. It's gated behind `?pvp=1` in `src/lobby.js` and not presented as a finished feature. Real networked play (rollback netcode, server-verified results, ranked scoring) is the subject of the in-progress rebuild — see [docs/PLAN-2026-09-engine-rebuild.md](docs/PLAN-2026-09-engine-rebuild.md) for the full plan and current phase.
 
 Built on [pfp-brawl](https://github.com/Pixelpushin/pfp-brawl), a generalized version of this same engine that can plug in any NFT collection - this repo is that engine with the [HOODCHAN adapter](src/adapters/hoodchan/) (`src/adapters/index.js`) as the only thing swapped in. See pfp-brawl's own [ADAPTERS.md](https://github.com/Pixelpushin/pfp-brawl/blob/main/ADAPTERS.md) if you want to do the same thing for a different collection - genuinely just fork, write one adapter file, change one import line.
 
@@ -34,7 +38,7 @@ Then open `http://localhost:8420`. Ships with the OnChainHoodies adapter active 
 
 ## Deploying
 
-Live at [brawl.hoodchan.org](https://brawl.hoodchan.org) - a dedicated Vercel project (separate from both hoodies-fight's and pfp-brawl's own), with `brawl.hoodchan.org` as a custom domain and `VERCEL_TOKEN`/`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` set as repo secrets so [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds/attests/deploys on every push to `main` (see that file's own comments - it deliberately fails closed rather than falling back to any other project). The HOODCHAN adapter needs no API keys of its own (on-chain + public IPFS gateways only). If X account linking is wanted later, set the env vars documented below.
+Live at [fight.hoodchan.org](https://fight.hoodchan.org) - a dedicated Vercel project (separate from both hoodies-fight's and pfp-brawl's own), with `fight.hoodchan.org` as a custom domain and `VERCEL_TOKEN`/`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` set as repo secrets so [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds/attests/deploys on every push to `main` (see that file's own comments - it deliberately fails closed rather than falling back to any other project). The HOODCHAN adapter needs no API keys of its own (on-chain + public IPFS gateways only). If X account linking is wanted later, set the env vars documented below.
 
 ## Verifying a live deploy
 
@@ -77,17 +81,31 @@ ADAPTERS.md                How to plug in a different NFT collection
 
 ## This project's own API
 
-A lightweight, ambient win/loss record per token ID, plus optional X account linking - full spec at [openapi.json](openapi.json).
+~19 serverless routes under `api/` - stats/social endpoints, the remote-lobby flow, X account linking, an IPFS proxy, and the mint pipeline. Full spec (every route, method, and auth requirement) at [openapi.json](openapi.json).
+
+**Stats (unauthenticated reads, social signal only):**
 
 - `GET /api/hoodie/{tokenId}/stats?adapter=<key>` - wins/losses/matches for one token
 - `GET /api/matches/recent?limit=25&adapter=<key>` - newest completed matches for one adapter's collection
 - `GET /api/leaderboard?limit=10&adapter=<key>` - top fighters by win count for one adapter's collection
 - `GET /api/rivalry/{tokenIdA}/{tokenIdB}?adapter=<key>` - head-to-head win record between two tokens (order doesn't matter)
-- `POST /api/match-result` - called by the game client itself when a match ends, body includes `adapter`; when `opponentTokenId` is present this also updates that pairing's rivalry record and, on a win, the leaderboard
+- `POST /api/match-result` - called by the game client itself when a vs-AI match ends, body includes `adapter`; when `opponentTokenId` is present this also updates that pairing's rivalry record and, on a win, the leaderboard
 
 Namespaced per adapter (`adapter` matches that adapter's own `config.key` from `src/adapters/*/index.js`) so two different collections' token #42 never share a record. `adapter` is optional on every route and defaults to `onchainhoodies` - that adapter specifically keeps its original unprefixed Redis keys rather than moving to the new `stats:{adapter}:...` scheme, since hoodies-fight's live deployment already has real accumulated win/loss data under those exact keys (see `api/_lib/stats-keys.js`).
 
-Unauthenticated by design, same trust model as everything else here (no wallet writes, nothing on-chain) - treat it as a fun social signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo). The active adapter needs `KV_REST_API_URL`/`KV_REST_API_TOKEN` set (Vercel's Upstash-for-Redis integration) for this API to work at all - without it, `reportMatchResult` calls still fire from the client (fire-and-forget, never blocks a match) but just fail silently server-side.
+These stats routes are unauthenticated by design - anyone can POST a result. Treat them as a fun ambient signal, not a verified competitive record. Backed by a small Redis store (`api/_lib/redis.js` talks to it over plain REST - no npm client, same zero-dependency approach as the rest of the repo). The active adapter needs `KV_REST_API_URL`/`KV_REST_API_TOKEN` set (Vercel's Upstash-for-Redis integration) for this API to work at all - without it, `reportMatchResult` calls still fire from the client (fire-and-forget, never blocks a match) but just fail silently server-side.
+
+### Mint pipeline and trust model
+
+This game **does** write on-chain, just never with a player's key. A completed match (vs-AI today; remote PVP once it's networked, see Status above) gets enqueued in Redis and picked up by a cron-triggered minter that calls `mintMatchRecord()` on a soulbound (EIP-5192-style, non-transferable) ERC-721 contract, minting a match record to each fighter's ERC-6551 token-bound account (not the holder's EOA) - see `api/_lib/mint.js`.
+
+- **Players never sign a transaction and never hold gas.** `src/wallet.js` only does `eth_requestAccounts` and a chain switch - read-only wallet connect, used to prove which token you're picking. Any message a player signs (or will sign, for the lobby-completion flow being added - see the plan doc) is an off-chain EIP-191 message proving ownership/a claimed result, never a transaction.
+- **The mint itself is paid for and authorized by an operator-held key** (`MINTER_PRIVATE_KEY`, a Vercel env var, never committed) via `api/_lib/mint.js` + the cron entrypoint `api/mint-cron.js` (protected by `CRON_SECRET`, Vercel sets the `Authorization` header on cron invocations).
+- **`POST /api/ai-match-complete`** (vs-AI match end) enqueues a mint only after a live `ownerOf()` check confirms both `wallet1`/`wallet2` actually hold the claimed `nft1`/`nft2` (RPC failure → 502, never treated as ownership confirmed), per-pair idempotency (one claim per unordered token pair, 30-day lock), a 3/day per-wallet mint cap, and a fail-closed 5-per-10-minutes-per-IP rate limit. This route pays for a real on-chain mint from the operator key, so every check here is defense against that, not against the leaderboard - see `api/ai-match-complete.js`.
+- **`POST /api/lobby/complete`** (remote PVP match end) currently records whichever result reaches it first for a given room code - it is not yet a signed, both-sides-must-agree submission. That hardening (EIP-191-signed result, single-use, both players' signatures required to agree) is also Phase 0 of the plan doc, in progress.
+- **`POST /api/lobby/join`** does enforce a real on-chain check today: it calls `ownerOf()` (`api/_lib/chain.js`) against Robinhood Chain and 403s if the wallet doesn't actually hold the claimed token ID.
+
+None of this is a ranked/competitive guarantee yet - see Status above and the plan doc for what "verified result" means once online play ships.
 
 ### X account linking
 

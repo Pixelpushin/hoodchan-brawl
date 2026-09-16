@@ -1,5 +1,6 @@
 .vercel
 version.json
+node_modules/
 
 # All sound effects are paid Splice samples, and all music tracks are Suno-
 # generated - neither license permits redistributing the raw files. See

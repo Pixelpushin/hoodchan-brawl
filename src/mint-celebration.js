@@ -1,12 +1,58 @@
-// Soulbound mint celebration overlay — shown after every PVP match.
+// Post-match result overlay — shown after every match, PVP or vs-AI.
 //
-// Flow: PvP match ends → lobbyComplete fires → showMintCelebration() called
-// immediately (optimistic — mint is guaranteed; cron processes within 1 min).
+// Flow: match ends → lobbyComplete (PVP) or submitAiMatchComplete (vs-AI)
+// awaits the server's verdict on this signed result → showMintCelebration()
+// is called with that verdict as `resultStatus`. Only "queued" means a mint
+// is actually going to happen — the KO trophy is always shown (the match
+// happened regardless), but the community-bar mint animation, boom sound,
+// and rank reveal are queued-only. The other statuses get honest copy and
+// never imply a mint that isn't coming:
+//   queued    — accepted; mint-cron will pick this up within ~1 min
+//   waiting   — PVP only: this side's result is recorded; opponent hasn't submitted yet
+//   disputed  — PVP only: sides submitted different winner/loser; nothing was recorded
+//   already   — vs-AI only: this exact pairing was already recorded/pending
+//   capped    — vs-AI only: this wallet hit its daily mint cap
+//   error     — no wallet connected, signing failed/rejected, or the request errored
 //
-// Visual: KO card trophy + fuse-burns-across-bar animation + rank reveal.
-// Audio: synthesized sizzle → crackle → boom (no audio file needed).
+// Visual (queued only): fuse-burns-across-bar animation + rank reveal.
+// Audio (queued only): synthesized sizzle → crackle → boom (no audio file needed).
 
 import { renderKOShareCard, shareKOImage } from "./share-card.js";
+import { activeAdapter } from "./adapters/index.js";
+
+const STATUS_COPY = {
+  queued: {
+    // Headline used to say "SOULBOUND MINTED" for a state that's only ever
+    // QUEUED at this point (mint-cron picks it up within ~1 min) - honest
+    // now, matching the subtitle instead of contradicting it.
+    chain: "⛓ MINT QUEUED",
+    subtitle: "Your match record is being forged on-chain forever.",
+  },
+  waiting: {
+    chain: "⏳ RESULT RECORDED",
+    subtitle: "Result recorded. Waiting for your opponent to confirm.",
+  },
+  disputed: {
+    chain: "⚠ RESULTS DIDN'T MATCH",
+    subtitle: "Results didn't match. This match won't be recorded.",
+  },
+  // vs-AI only: api/ai-match-complete.js's idempotency guard rejected this
+  // exact pairing because it was already queued/minted.
+  already: {
+    chain: "⚠ ALREADY RECORDED",
+    subtitle: "This matchup was already recorded on-chain.",
+  },
+  // vs-AI only: the wallet hit its daily mint cap (api/_lib/rate-limit.js's
+  // countAndCap).
+  capped: {
+    chain: "⏳ DAILY MINT LIMIT REACHED",
+    subtitle: "You've hit today's mint limit - come back tomorrow.",
+  },
+  error: {
+    chain: "⚠ COULDN'T RECORD RESULT",
+    subtitle: "Couldn't record the result.",
+  },
+};
 
 // ─── Synthesized fuse + boom sound ──────────────────────────────────────────
 
@@ -111,7 +157,12 @@ async function fetchBarData() {
 async function fetchPlayerRank(walletAddress) {
   if (!walletAddress) return null;
   try {
-    const res = await fetch("/api/leaderboard?limit=500");
+    // Was missing ?adapter= entirely, defaulting to whatever the server
+    // falls back to - see api/leaderboard.js - which used to be the legacy
+    // onchainhoodies board, not this adapter's. Every other adapter-scoped
+    // fetch in this app (main.js's leaderboard render, api.js's stats calls)
+    // passes activeAdapter.config.key explicitly; this one has to match.
+    const res = await fetch(`/api/leaderboard?limit=500&adapter=${encodeURIComponent(activeAdapter.config.key)}`);
     if (!res.ok) return null;
     const { fighters } = await res.json();
     const idx = fighters?.findIndex(f => f.wallet?.toLowerCase() === walletAddress.toLowerCase());
@@ -146,10 +197,13 @@ function el(tag, attrs = {}, children = []) {
  * @param {HTMLCanvasElement} opts.matchCanvas
  * @param {AudioContext|null} opts.audioCtx
  * @param {string|null} opts.walletAddress — p1 connected wallet for rank lookup
+ * @param {"queued"|"waiting"|"disputed"|"already"|"capped"|"error"} [opts.resultStatus] — server verdict from lobbyComplete (PVP) or submitAiMatchComplete (vs-AI); both callers now always pass this explicitly. Defaults to "queued" only as a last-resort fallback for a caller that omits it entirely.
  * @returns {Promise<void>} resolves when player dismisses
  */
-export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, audioCtx, walletAddress } = {}) {
+export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, audioCtx, walletAddress, resultStatus = "queued" } = {}) {
   return new Promise((resolve) => {
+    const copy = STATUS_COPY[resultStatus] ?? STATUS_COPY.error;
+    const isQueued = resultStatus === "queued";
     // ── Overlay shell ──
     const overlay = el("div", { className: "mint-celebration-overlay" });
     const panel = el("div", { className: "mint-celebration-panel" });
@@ -167,8 +221,8 @@ export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, 
 
     // ── Header ──
     const header = el("div", { className: "mint-cel-header" });
-    const chain = el("div", { className: "mint-cel-chain", textContent: "⛓ SOULBOUND MINTED" });
-    const subtitle = el("div", { className: "mint-cel-subtitle", textContent: "Your match record is being forged on-chain forever." });
+    const chain = el("div", { className: "mint-cel-chain", textContent: copy.chain });
+    const subtitle = el("div", { className: "mint-cel-subtitle", textContent: copy.subtitle });
     header.appendChild(chain);
     header.appendChild(subtitle);
     panel.appendChild(header);
@@ -186,38 +240,46 @@ export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, 
       })
       .catch(() => {});
 
-    // ── Community bar section ──
-    const barSection = el("div", { className: "mint-cel-bar-section" });
-    const barLabel = el("div", { className: "mint-cel-bar-label", textContent: "GLOBAL UNIQUE FIGHTS" });
-    const barCountEl = el("div", { className: "mint-cel-bar-count", textContent: "…" });
-    const barTrack = el("div", { className: "mint-cel-bar-track" });
-    const barFill = el("div", { className: "mint-cel-bar-fill" });
-    const fuseHead = el("div", { className: "mint-cel-fuse-head" });
-    const sparksContainer = el("div", { className: "mint-cel-sparks" });
-    barFill.appendChild(fuseHead);
-    barTrack.appendChild(barFill);
-    barTrack.appendChild(sparksContainer);
-    barSection.appendChild(barLabel);
-    barSection.appendChild(barCountEl);
-    barSection.appendChild(barTrack);
+    // ── Community bar section (queued only — its fuse/boom/rank-reveal IS
+    // the mint celebration, so it's the one piece that would flatly lie
+    // about a mint that isn't happening for any other status). Declared at
+    // this scope (not just inside the `if`) so the animateBar() closure
+    // further down can still close over them when isQueued is true.
+    let barSection = null, barCountEl = null, barFill = null, sparksContainer = null, rankEl = null;
+    if (isQueued) {
+      barSection = el("div", { className: "mint-cel-bar-section" });
+      const barLabel = el("div", { className: "mint-cel-bar-label", textContent: "GLOBAL UNIQUE FIGHTS" });
+      barCountEl = el("div", { className: "mint-cel-bar-count", textContent: "…" });
+      const barTrack = el("div", { className: "mint-cel-bar-track" });
+      barFill = el("div", { className: "mint-cel-bar-fill" });
+      const fuseHead = el("div", { className: "mint-cel-fuse-head" });
+      sparksContainer = el("div", { className: "mint-cel-sparks" });
+      barFill.appendChild(fuseHead);
+      barTrack.appendChild(barFill);
+      barTrack.appendChild(sparksContainer);
+      barSection.appendChild(barLabel);
+      barSection.appendChild(barCountEl);
+      barSection.appendChild(barTrack);
 
-    // Rank display
-    const rankEl = el("div", { className: "mint-cel-rank hidden", textContent: "" });
-    barSection.appendChild(rankEl);
+      // Rank display
+      rankEl = el("div", { className: "mint-cel-rank hidden", textContent: "" });
+      barSection.appendChild(rankEl);
 
-    panel.appendChild(barSection);
+      panel.appendChild(barSection);
+    }
 
     // ── Buttons ──
+    // Sharing implies "I earned a soulbound token" - only true when queued.
     const btns = el("div", { className: "mint-cel-btns" });
-    const shareBtn = el("button", { className: "mint-cel-share-btn", textContent: "SHARE ON X" });
+    const shareBtn = isQueued ? el("button", { className: "mint-cel-share-btn", textContent: "SHARE ON X" }) : null;
     const dismissBtn = el("button", { className: "mint-cel-dismiss-btn secondary-btn", textContent: "CONTINUE" });
-    btns.appendChild(shareBtn);
+    if (shareBtn) btns.appendChild(shareBtn);
     btns.appendChild(dismissBtn);
     panel.appendChild(btns);
 
     dismissBtn.addEventListener("click", dismiss);
 
-    shareBtn.addEventListener("click", async () => {
+    shareBtn?.addEventListener("click", async () => {
       shareBtn.disabled = true;
       try {
         const ko = await renderKOShareCard({ winnerName, loserName, roundScore: wins, winnerCanvas: matchCanvas });
@@ -234,8 +296,8 @@ export function showMintCelebration({ winnerName, loserName, wins, matchCanvas, 
       }
     });
 
-    // ── Animate bar after short delay (let overlay paint first) ──
-    setTimeout(() => animateBar(), 300);
+    // ── Animate bar after short delay (let overlay paint first) — queued only ──
+    if (isQueued) setTimeout(() => animateBar(), 300);
 
     async function animateBar() {
       const { total, milestones } = await fetchBarData();

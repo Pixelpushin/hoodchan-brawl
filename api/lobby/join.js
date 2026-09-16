@@ -33,6 +33,7 @@
 const { redisCommand, redisCompareAndSet } = require("../_lib/redis");
 const { MAX_TOKEN_ID } = require("../_lib/stats-keys");
 const { ownerOf } = require("../_lib/chain");
+const { enforceRateLimit } = require("../_lib/rate-limit");
 
 const LOBBY_TTL_SECONDS = 600; // refresh TTL on every join so active rooms survive
 const CAS_ATTEMPTS = 4;
@@ -58,6 +59,7 @@ module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
   if (req.method !== "POST") { res.status(405).json({ error: "Use POST" }); return; }
+  if (!(await enforceRateLimit(req, res, "join", 30, 600))) return;
 
   const body = req.body || {};
   const { roomCode, wallet, tokenId: rawTokenId, signature, side } = body;
