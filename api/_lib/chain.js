@@ -28,35 +28,60 @@ function decodeAddress(hex) {
   return `0x${clean.slice(-40)}`.toLowerCase();
 }
 
-// ownerOf(tokenId) on NFT_CONTRACT, lowercase. Throws if the RPC itself
-// fails so callers can distinguish "can't verify" (502) from "not the owner"
-// (403). Returns null if the token has no owner.
-async function ownerOf(tokenId) {
-  const data = `0x${SELECTOR_OWNER_OF}${encodeUint256(tokenId)}`;
-  const res = await fetch(RPC_URL, {
+// RPC endpoints, in order. Alchemy first when the project has a key (same
+// Alchemy-first-then-public pattern as hoodchan.org's lib/rpc.ts; Alchemy
+// supports Robinhood Chain), the public RPC otherwise/as fallback.
+function rpcEndpoints() {
+  const key = process.env.ALCHEMY_API_KEY;
+  const list = [];
+  if (key) list.push({ name: "alchemy", url: `https://robinhood-mainnet.g.alchemy.com/v2/${key}` });
+  list.push({ name: "public", url: RPC_URL });
+  return list;
+}
+
+// One eth_call against one endpoint. Resolves ONLY with a real hex result;
+// anything else (HTTP error, HTML challenge page, JSON without a result,
+// JSON-RPC error) throws with enough detail to see what the endpoint actually
+// answered. This matters: a bad answer must never decode to "some other
+// address" and turn into a 403 "does not own" for the real owner.
+async function ethCall(endpoint, to, data) {
+  const res = await fetch(endpoint.url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      // The public Robinhood RPC rejects bare/non-browser clients from some
-      // networks; these two headers are what its own frontends send.
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-      origin: "https://vibechain.com",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "eth_call",
-      params: [{ to: NFT_CONTRACT, data }, "latest"],
-    }),
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] }),
     // Same budget as the client twin (src/adapters/hoodchan/chain.js). A hung
     // RPC socket must become a 502 "can't verify" from join.js, not a
     // bodyless Vercel 504.
     signal: AbortSignal.timeout(8000),
   });
-  const body = await res.json();
-  if (body.error) throw new Error(body.error.message ?? "eth_call failed");
-  return decodeAddress(body.result);
+  const text = await res.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch { /* non-JSON: reported below */ }
+  const snippet = text.replace(/\s+/g, " ").slice(0, 80);
+  if (!res.ok) throw new Error(`${endpoint.name} rpc HTTP ${res.status}: ${snippet}`);
+  if (!body || typeof body !== "object") throw new Error(`${endpoint.name} rpc non-JSON: ${snippet}`);
+  if (body.error) throw new Error(`${endpoint.name} rpc error: ${body.error.message ?? snippet}`);
+  if (typeof body.result !== "string" || !/^0x[0-9a-fA-F]*$/.test(body.result)) {
+    throw new Error(`${endpoint.name} rpc no result: ${snippet}`);
+  }
+  return body.result;
+}
+
+// ownerOf(tokenId) on NFT_CONTRACT, lowercase. Tries each endpoint in turn;
+// throws (with every endpoint's reason) only if all of them fail, so callers
+// can distinguish "can't verify" (502) from "not the owner" (403). Returns
+// null if the call succeeded but the token has no owner.
+async function ownerOf(tokenId) {
+  const data = `0x${SELECTOR_OWNER_OF}${encodeUint256(tokenId)}`;
+  const reasons = [];
+  for (const endpoint of rpcEndpoints()) {
+    try {
+      return decodeAddress(await ethCall(endpoint, NFT_CONTRACT, data));
+    } catch (err) {
+      reasons.push(err.message);
+    }
+  }
+  throw new Error(reasons.join(" | "));
 }
 
 module.exports = { RPC_URL, CHAIN_ID, NFT_CONTRACT, ownerOf };

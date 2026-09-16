@@ -89,7 +89,12 @@ module.exports = async (req, res) => {
         actualOwner = await ownerOf(tokenId);
       } catch (chainErr) {
         console.error("[lobby/join] ownerOf RPC failed", chainErr);
-        res.status(502).json({ error: "Could not verify token ownership — RPC unavailable" });
+        // `detail` is the RPC's own status/snippet (no secrets) so an outage
+        // is diagnosable from the response instead of only from function logs.
+        res.status(502).json({
+          error: "Could not verify token ownership — RPC unavailable",
+          detail: String(chainErr.message ?? "").slice(0, 200),
+        });
         return;
       }
       if (actualOwner !== walletLc) {
