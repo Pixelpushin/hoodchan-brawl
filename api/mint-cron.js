@@ -99,7 +99,10 @@ async function scanQueueKeys() {
 // keyEnv URL), a future error source easily could. Defense in depth, not a
 // response to a proven leak today.
 function sanitizeErrorForPublish(msg) {
-  return String(msg).replace(/https?:\/\/\S+/gi, "[url]").slice(0, 300);
+  // See api/_lib/log.js's redactSecrets: an ethers error once carried the raw
+  // MINTER_PRIVATE_KEY into this key and out through /api/status. Nothing
+  // that isn't scrubbed may be stored here.
+  return require("./_lib/log").redactSecrets(msg, 300);
 }
 
 async function setCronLastError(msg) {
@@ -269,7 +272,7 @@ module.exports = async (req, res) => {
         // failing until MAX_ATTEMPTS) reports the real reason instead of a
         // generic placeholder. Best-effort — losing this write just means a
         // less informative (but still correct) dead-letter payload later.
-        await redisCommand("SET", lastErrorKey, String(mintErr.message).slice(0, 500), "EX", String(ATTEMPTS_TTL_SECONDS)).catch(() => {});
+        await redisCommand("SET", lastErrorKey, require("./_lib/log").redactSecrets(mintErr.message, 500), "EX", String(ATTEMPTS_TTL_SECONDS)).catch(() => {});
         // Leave in queue for next cron run — will retry (up to MAX_ATTEMPTS
         // visits total, tracked by attemptsKey above).
         results.push({ roomCode, status: "error", error: mintErr.message });

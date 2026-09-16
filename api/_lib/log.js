@@ -19,11 +19,39 @@ const { clientIp } = require("./rate-limit");
 
 const SECRET_KEY_RE = /signature|token|authorization|privatekey/i;
 
+// Scrubs secret-looking substrings out of free text that is about to be
+// stored in Redis, printed to a log, or returned by an HTTP response. Exists
+// because a library's error message can embed the very value it rejected -
+// ethers: 'invalid BytesLike value (argument="value", value="0x…")' - which
+// is exactly how a malformed MINTER_PRIVATE_KEY env var (trailing newline)
+// surfaced through mint:cron:lastError and the public /api/status on
+// 2026-09-16. Aggressive on purpose: any 32+ hex run or 0x-prefixed 40+ hex
+// run is treated as a secret (tx hashes and addresses in ERROR text are an
+// acceptable loss), key=value / key:"value" pairs whose key looks sensitive
+// lose their value, URLs are collapsed, and the result is capped.
+const HEX_SECRET_RE = /0x[0-9a-fA-F]{40,}|\b[0-9a-fA-F]{32,}\b/g;
+const VALUE_ATTR_RE = /\b(value|key|secret|token|signature|authorization|privateKey|mnemonic)\s*[=:]\s*("[^"]*"|'[^']*'|[^\s,)]+)/gi;
+function redactSecrets(text, max = 300) {
+  return String(text ?? "")
+    .replace(VALUE_ATTR_RE, (_, k) => `${k}=[redacted]`)
+    .replace(HEX_SECRET_RE, "[redacted]")
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+// Free-text-ish fields (error messages, reasons, details) get the same scrub
+// so a call site logging { error: err.message } can't leak either.
+const TEXT_KEY_RE = /error|message|reason|detail|stack/i;
+
 function redact(fields) {
   if (!fields || typeof fields !== "object") return fields;
   const out = {};
   for (const [key, value] of Object.entries(fields)) {
-    out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : value;
+    if (SECRET_KEY_RE.test(key)) out[key] = "[redacted]";
+    else if (TEXT_KEY_RE.test(key) && typeof value === "string") out[key] = redactSecrets(value, 1000);
+    else out[key] = value;
   }
   return out;
 }
@@ -50,4 +78,4 @@ function logger(req, route) {
   };
 }
 
-module.exports = { logger };
+module.exports = { logger, redactSecrets };
