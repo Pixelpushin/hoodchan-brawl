@@ -44,6 +44,7 @@ import { speakTaunt } from "./tts.js";
 import { isBloodUnlocked } from "./blood-code.js";
 import { reportMatchResult } from "./api.js";
 import { findGamepad, buildGamepadInput } from "./gamepad.js";
+import { nextU32, makeRng, derive, randomSeed } from "./rng.js";
 
 const KEYMAP = {
   p1: {
@@ -227,6 +228,32 @@ const SLIDE_HIT_RADIUS = 70;
 // ranges (fighter.js) are all sized to clear this with margin.
 const MIN_FIGHTER_GAP = 68;
 
+// --- Fixed-timestep sim loop -----------------------------------------------
+// The loop used to tick the whole simulation once per requestAnimationFrame
+// callback with no dt of its own (see loop() below) - fine on the 60 Hz
+// displays this was built and tested on, but display refresh rate is not a
+// constant: a 144 Hz monitor calls rAF 144 times a second, and with no
+// decoupling that meant the ENTIRE match (movement, hitstun, projectile
+// speed, the round clock) ran 2.4x real speed on one, unmodified, exactly
+// because rAF cadence was silently standing in for elapsed time. Splitting
+// the loop into stepOnce() (mutates sim state, always exactly 1/60s of game
+// time per call) and render() (draws whatever stepOnce last left behind, at
+// however often the display actually calls rAF) and driving stepOnce from a
+// real accumulator fixes that: the match now always advances at 60 fixed
+// steps per second of wall-clock time regardless of refresh rate.
+const STEP_MS = 1000 / 60;
+// Ceiling on how many catch-up steps a single rAF callback will run (e.g.
+// after a tab was backgrounded and rAF paused for a while) - without this a
+// long stall would try to replay the entire missed duration in one frame,
+// visibly freezing the tab while it does. Discarding the leftover
+// accumulator once this caps out (see the loop below) means a bad stall
+// costs the match some wall-clock accuracy, never a spinning/hung frame.
+const MAX_STEPS_PER_FRAME = 4;
+// Also bounds how much of a single large rAF gap can ever be converted into
+// accumulator time in the first place - same stall scenario as above, but
+// clamped before it ever reaches the step loop.
+const MAX_FRAME_DELTA_MS = 250;
+
 // A fighter counts as "airborne" for every one of the grounded-attack
 // exclusion checks below (checkHit/updateSlide/checkBuilderSpecialHit/
 // updateProjectiles' own dodge logic/resolveCollision)
@@ -295,7 +322,150 @@ function resolveCollision(a, b) {
 
 const SCROLL_KEYS = new Set([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
 
-export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, practiceMode = false }) {
+export function createGame({
+  ctx,
+  p1,
+  p2,
+  onEnd,
+  timeLimit = 60,
+  p2AI = false,
+  practiceMode = false,
+  // Design A step c: matchSeed is created once per match by main.js's
+  // runMatch (randomSeed()) and threaded down here every round; roundIndex/
+  // drawStreak come along with it so the outcome stream (round.rngState
+  // below) is a fresh, reproducible derivation per round instead of one
+  // seed reused start-to-finish. Defaulted (not required) so this stays
+  // callable exactly as before for any caller that doesn't care about
+  // determinism (there are none today, but createGame's own contract
+  // shouldn't force every caller to source a seed).
+  matchSeed = randomSeed(),
+  roundIndex = 0,
+  drawStreak = 0,
+}) {
+  // --- Round state (Design A step b) ---------------------------------------
+  // Used to be a dozen+ bare closure `let`/`const` variables (timeLeft,
+  // frame, ended, resultTimer, roundWinner, shake, flash, hitstopFrames,
+  // powerFullFired, projectiles) scattered across this function - fine for a
+  // single local match, but not something a future headless replay/rollback
+  // (Design A steps e-h) can snapshot, diff, or feed to a checksum. Hoisted
+  // into one plain object instead, built by a real function (not a bare
+  // object literal) so a later match-level wrapper can call it fresh per
+  // round without this file needing to change. Deliberately does NOT include
+  // `stopped`/`roundConcluded`/`accumulatorMs`/`lastFrameTime` below - those
+  // are loop-control (when does requestAnimationFrame keep firing), not
+  // match state a replay would ever need to reconstruct.
+  //
+  // roundWinner is an INDEX (0|1|-1), not a Fighter reference - fighters
+  // still carry non-serializable fields of their own for now (headImg, an
+  // HTMLImageElement - that moves to a real present/ layer in step e), so
+  // JSON.stringify(round) staying safe requires round itself to never hold a
+  // Fighter ref anywhere, including here. endRound() below converts the real
+  // winner (a Fighter or null) to this index via `fighters.indexOf`, and
+  // loop()'s own onEnd() call converts it back before handing it to the
+  // caller (main.js) - createGame's own onEnd(winner) contract is
+  // deliberately unchanged (a Fighter ref, or null on a draw), so this stays
+  // entirely internal.
+  //
+  // Declared before emptyP2Input/getAIInput below (rather than staying down
+  // near the fighters/fx setup it's conceptually grouped with) because
+  // getAIInput needs roundRng at construction time, not just for its
+  // definition to type-check - a `const` temporal-dead-zone reference, not
+  // just a style nit.
+  //
+  // fighters[0]/fighters[1] alias the exact same Fighter instances p1/p2
+  // already are (same object identity, not a copy) - existing p1/p2 names
+  // are kept as the working aliases everywhere below (keeps this diff
+  // readable; p1/p2 were already this function's own parameter names, not
+  // match state that needed hoisting into `round`), but projectiles/
+  // roundWinner/round.ai (review S4) now store/index by an INDEX into this
+  // array rather than a direct Fighter reference, which is what actually
+  // lets `round` stay plain, serializable data - see createRoundState's own
+  // comment above and spawnProjectile/spawnHomingProjectile below for where
+  // `owner` gets set. Declared here (moved up from its old spot further
+  // down, right before createRoundState/getAIInput are built) because
+  // getAIInput now needs `fighters.indexOf(p2)` at construction time too,
+  // same temporal-dead-zone reason roundRng already forced this ordering.
+  const fighters = [p1, p2];
+
+  function createRoundState() {
+    return {
+      frame: 0,
+      timeLeft: timeLimit,
+      ended: false,
+      resultTimer: 0,
+      roundWinner: -1,
+      hitstopFrames: 0,
+      powerFullFired: { p1: false, p2: false },
+      projectiles: [],
+      // Design A step c: the AI's OUTCOME rng stream, seeded fresh per round
+      // from the match seed + this round's own identity (roundIndex,
+      // drawStreak - a redo of the same round number after a draw gets a
+      // different derivation, not a repeat of the exact same fight). Kept as
+      // plain data on `round` (not inside a closure) specifically so a
+      // future snapshot/replay (step f) can read and restore it like every
+      // other field here - see the roundRng object below, which reads/
+      // writes this field directly instead of holding its own state.
+      rngState: derive(matchSeed, `round:${roundIndex}:${drawStreak}`),
+      // Bugfix (review S4): the AI controller's re-think schedule + its
+      // last-decided input used to be plain closure `let`s inside ai.js
+      // (thinkAt, input - plus its own private `frame` counter, removed
+      // entirely below since it always moved in exact lockstep with
+      // round.frame anyway). A future snapshot restore (step f) would bring
+      // round.rngState back correct but leave those closure vars at
+      // whatever they happened to be at restore time - re-thinking on a
+      // different schedule than the snapshot captured, which is real
+      // divergence, not cosmetic (unlike fx.shake/fx.flash above). Two
+      // fixed slots (index = fighters[] index) so this stays "every field
+      // declared, nothing lazily created" like the rest of `round`, even
+      // though only fighters[1] (p2) ever actually gets a controller today.
+      ai: [
+        { thinkAt: 0, input: null },
+        { thinkAt: 0, input: null },
+      ],
+    };
+  }
+  const round = createRoundState();
+
+  // The AI's rng object (passed to createAIController below): every call
+  // advances round.rngState via one mulberry32 step (nextU32 - see rng.js)
+  // instead of closing over its own private state, so round.rngState is
+  // always the live, authoritative, snapshot-able value - never a stale
+  // mirror of state that actually lives somewhere else.
+  const roundRng = {
+    float() {
+      const [next, u32] = nextU32(round.rngState);
+      round.rngState = next;
+      return u32 / 4294967296;
+    },
+  };
+
+  // The COSMETIC rng stream (blood/splat/spatter/swish/shake/victory quote -
+  // see body.js's Math.random removal and every fx.* push below). Seeded
+  // once from the match seed alone (derive(matchSeed, "fx"), no round/
+  // drawStreak component - see PLAN-2026-09-engine-rebuild.md Design A's
+  // "RNG, input, loop, snapshot" section), and deliberately NOT stored on
+  // `round` - unlike the outcome stream, nothing here ever needs to affect a
+  // match result or be replayed bit-exactly, so it can stay ordinary closure
+  // state like `stopped`/`fx` (both declared further down, alongside the
+  // rest of this function's non-round state).
+  const fxRng = makeRng(derive(matchSeed, "fx"));
+
+  // Screen-shake jitter's OWN stream (review S2). render() draws once per
+  // rAF, which is display-refresh-rate, not sim-rate - so however many
+  // shake draws a match consumes is a function of the viewer's monitor, not
+  // of matchSeed. That's fine for the shake wobble itself (nobody needs a
+  // screen wiggle to replay bit-exact), but it is NOT fine to draw those
+  // values from fxRng: every extra float() a 144 Hz display burns through
+  // during a shake shifts every blood-spot/splat-variant/victory-quote pick
+  // that comes after it for the rest of the match, on that stream, for that
+  // peer only - the exact thing fxRng was split from round.rngState to
+  // prevent (see rng.js's module comment). A dedicated stream, still seeded
+  // from matchSeed like every other derived stream, keeps shake's own
+  // pattern nominally reproducible per machine while leaving fxRng (and
+  // everything downstream of it) untouched by however fast this machine
+  // happens to render.
+  const shakeRng = makeRng(derive(matchSeed, "shake"));
+
   // A real training dummy, not just a very bad AI - never acts (no attacks,
   // no blocks, no movement), which is exactly emptyP2Input below. p2AI is
   // ignored entirely when this is on; readInput(KEYMAP.p2) is also skipped
@@ -305,68 +475,193 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     uppercut: false, slide: false, punch: false, kick: false, special: false,
     dash: false,
   };
-  const getAIInput = practiceMode ? null : p2AI ? createAIController(p2, p1) : null;
+  // round (for round.frame/round.ai - see review S4) and fighters.indexOf(p2)
+  // (the AI's slot in round.ai, always 1 today but derived rather than
+  // hardcoded so this keeps working if fighters[] order ever changes)
+  // replace the closure-only frame/thinkAt/input state ai.js used to keep.
+  const getAIInput = practiceMode
+    ? null
+    : p2AI
+      ? createAIController(p2, p1, roundRng, round, fighters.indexOf(p2))
+      : null;
   const pressed = new Set();
+  // Keys that went down since stepOnce() last drained this set. A single
+  // rAF was always exactly one sim step before the fixed-timestep loop
+  // below, so a keydown+keyup faster than one frame still landed inside
+  // some pressed-set snapshot. Now that a step is a fixed 1/60s of game
+  // time and rAF can fire more (or, after a stall, less) often than that, a
+  // tap shorter than one step could otherwise fall entirely between two
+  // stepOnce() calls and never be read at all - latched keeps it "held" for
+  // exactly the one step following the keydown, same as it always felt.
+  const latched = new Set();
   const keydown = (e) => {
     const key = e.key.toLowerCase();
     if (SCROLL_KEYS.has(key)) e.preventDefault();
     pressed.add(key);
+    latched.add(key);
   };
   const keyup = (e) => pressed.delete(e.key.toLowerCase());
   window.addEventListener("keydown", keydown);
   window.addEventListener("keyup", keyup);
 
+  // Cleared once per stepOnce() call (see clearLatchedKeys below) so a tap
+  // only ever latches for the single step right after it happened, not
+  // every step until some later keyup happens to be read.
+  function clearLatchedKeys() {
+    latched.clear();
+  }
+
   function readInput(map) {
     return {
-      left: pressed.has(map.left),
-      right: pressed.has(map.right),
-      block: pressed.has(map.block),
-      crouch: pressed.has(map.crouch),
-      jump: pressed.has(map.jump),
-      uppercut: pressed.has(map.uppercut),
-      slide: pressed.has(map.slide),
-      punch: pressed.has(map.punch),
-      kick: pressed.has(map.kick),
-      special: pressed.has(map.special),
-      dash: pressed.has(map.dash),
+      left: pressed.has(map.left) || latched.has(map.left),
+      right: pressed.has(map.right) || latched.has(map.right),
+      block: pressed.has(map.block) || latched.has(map.block),
+      crouch: pressed.has(map.crouch) || latched.has(map.crouch),
+      jump: pressed.has(map.jump) || latched.has(map.jump),
+      uppercut: pressed.has(map.uppercut) || latched.has(map.uppercut),
+      slide: pressed.has(map.slide) || latched.has(map.slide),
+      punch: pressed.has(map.punch) || latched.has(map.punch),
+      kick: pressed.has(map.kick) || latched.has(map.kick),
+      special: pressed.has(map.special) || latched.has(map.special),
+      dash: pressed.has(map.dash) || latched.has(map.dash),
     };
   }
 
   // OR's keyboard and gamepad together rather than one replacing the other,
   // so a controller plugged in mid-match just works alongside the keyboard
-  // with nothing to switch into. gp is a real Gamepad object (or null) from
-  // findGamepad() - resolved fresh per-frame in the main loop below rather
-  // than assumed to live at a fixed browser index (verified live: a single
-  // connected pad can land at index 1, not 0, leaving a hardcoded "p1 =
-  // index 0" lookup seeing nothing even though the pad works fine).
-  function withGamepad(keyboardInput, gp) {
-    if (!gp) return keyboardInput;
-    const gpInput = buildGamepadInput(gp);
+  // with nothing to switch into. gpMask is a plain boolean-struct snapshot
+  // (see p1GamepadLatched/p2GamepadLatched below), not a raw Gamepad object
+  // - the raw-object-to-struct conversion (and the findGamepad() index scan
+  // that avoids assuming a pad always lands at browser index 0) happens
+  // once per rAF in pollGamepads(), not per call here.
+  function withGamepad(keyboardInput, gpMask) {
     const merged = {};
-    for (const key in keyboardInput) merged[key] = keyboardInput[key] || gpInput[key];
+    for (const key in keyboardInput) merged[key] = keyboardInput[key] || gpMask[key];
     return merged;
   }
 
-  let timeLeft = timeLimit;
-  let frame = 0;
-  let ended = false;
+  function blankGamepadMask() {
+    return {
+      left: false, right: false, block: false, crouch: false, jump: false,
+      uppercut: false, slide: false, punch: false, kick: false, special: false,
+      dash: false,
+    };
+  }
+
+  // Gamepad's own held+latched split (review S3), deliberately mirroring
+  // pressed+latched above rather than just a bare OR-accumulator: a *held*
+  // snapshot (p1GamepadHeld/p2GamepadHeld - refreshed, never accumulated,
+  // on every pollGamepads() call) plus a *latched* one (OR-accumulated,
+  // drained once per stepOnce()) are BOTH needed, for two different
+  // failure modes:
+  //   - buildGamepadInput() only ever reports "is this held RIGHT NOW", the
+  //     same limitation the keyboard's raw `pressed` set has - which is
+  //     exactly why `latched` exists above for keyboard taps shorter than
+  //     one sim step. findGamepad()+buildGamepadInput() used to run fresh
+  //     inside stepOnce() itself, so on a 144 Hz display the effective poll
+  //     window shrank to the sim's fixed 16.7 ms step, and a turbo/rapid-
+  //     fire pad - or a genuine sub-step tap - could land entirely between
+  //     two stepOnce() calls and never get read at all. `latched` (OR'd by
+  //     pollGamepads(), called once per rAF from loop() regardless of how
+  //     many - zero, one, several - stepOnce() calls happen that callback)
+  //     closes this the same way the keyboard's own `latched` set does.
+  //   - A bare OR-accumulator alone would break the OPPOSITE, far more
+  //     common case: any display slower than 60 Hz (30 Hz is routine, not a
+  //     stall - every callback there runs a steady 2-step catch-up) calls
+  //     pollGamepads() once but stepOnce() (and thus a drain) twice per
+  //     rAF, so only the FIRST of those two steps would ever see a held
+  //     direction/button - the second would read back a mask this same
+  //     callback's own first step had already zeroed, making steady input
+  //     (just walking) visibly stutter every other sim step on exactly the
+  //     refresh rates this whole rebuild is supposed to make agree. `held`
+  //     is never drained - only overwritten by the next poll - so every
+  //     step in a multi-step callback still sees it, the same real-time
+  //     "currently held" read a fresh per-step findGamepad() call always
+  //     would have (the browser snapshots Gamepad state once per animation
+  //     frame internally regardless of how many times it's queried within
+  //     one task, so this isn't even a staleness trade-off).
+  let p1GamepadHeld = blankGamepadMask();
+  let p2GamepadHeld = blankGamepadMask();
+  let p1GamepadLatched = blankGamepadMask();
+  let p2GamepadLatched = blankGamepadMask();
+
+  function pollGamepads() {
+    const p1Gamepad = findGamepad();
+    const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
+    p1GamepadHeld = p1Gamepad ? buildGamepadInput(p1Gamepad) : blankGamepadMask();
+    p2GamepadHeld = p2Gamepad ? buildGamepadInput(p2Gamepad) : blankGamepadMask();
+    for (const key in p1GamepadHeld) p1GamepadLatched[key] = p1GamepadLatched[key] || p1GamepadHeld[key];
+    for (const key in p2GamepadHeld) p2GamepadLatched[key] = p2GamepadLatched[key] || p2GamepadHeld[key];
+  }
+
+  // held OR latched, same shape readInput() above merges pressed OR latched
+  // - called at read time (not folded into withGamepad itself) so the two
+  // human sides can each merge their own pair without a temporary object
+  // surviving past this step's use of it.
+  function readGamepadMask(held, latched) {
+    const merged = {};
+    for (const key in held) merged[key] = held[key] || latched[key];
+    return merged;
+  }
+
+  function clearGamepadLatch() {
+    p1GamepadLatched = blankGamepadMask();
+    p2GamepadLatched = blankGamepadMask();
+  }
+
+  // Presentation-only FX layers (Design A: `present/`, not sim) - pushed to
+  // by spawnHitEffects/the hit branches below, drained by drawBloodFX/
+  // drawGroundBlood at render time, never read by any hit-detection/damage/
+  // state-transition logic in this file. Kept as their own `fx` object
+  // rather than folded into `round` specifically so a future headless
+  // replay never has to carry blood-splatter arrays through the sim at all.
+  const fx = {
+    // Screen shake / hit-flash intensity. Bugfix (review B1): these used to
+    // live on `round` and get decayed inside render() (`shake *= 0.8` /
+    // `flash *= 0.75`, still done at render time below - see that comment),
+    // which meant a step (f) FNV checksum over `round` would fold in a value
+    // that decays at DISPLAY rate, not sim rate - identical inputs on a
+    // 144 Hz peer and a 60 Hz peer would then checksum-mismatch every frame
+    // (2.4x faster decay on the faster display) even though gameplay never
+    // diverged. Pure presentation - grep confirms nothing in combat/state
+    // logic reads either - so they belong here on `fx`, never on `round`.
+    shake: 0,
+    flash: 0,
+    groundBlood: [],
+    spatters: [],
+    splatExtras: [],
+    headPops: [],
+    impacts: [],
+    // Combo escalation FX - separate from impacts/hitSparks (those are the
+    // plain per-hit feedback every landed hit already gets) so this layer
+    // can come and go with comboCount without touching that baseline.
+    hitSparks: [],
+    comboSwishes: [],
+    comboPops: [],
+  };
+
   // Fully halts the render loop (set by the cleanup function this returns).
-  // Distinct from `ended`, which only stops combat logic - the result/flex
-  // display keeps animating and rendering for a while after `ended` flips.
+  // Distinct from `round.ended`, which only stops combat logic - the result/
+  // flex display keeps animating and rendering for a while after that flips.
   let stopped = false;
-  let resultTimer = 0;
-  let roundWinner;
-  let shake = 0;
-  let flash = 0;
-  // Hitstop - counts down in real frames. While > 0, loop() below takes the
-  // early-return branch that freezes both fighters, projectiles, blood FX,
-  // and the round timer entirely (only input polling for buffer capture and
-  // drawing the current frame still run) - see computeHitstopFrames in
-  // fighter.js for the damage->frames formula and the "if (hitstopFrames >
-  // 0)" branch of loop() for the actual freeze. Set (never just assigned)
-  // via triggerHitstop so multiple hits landing the same frame always keep
-  // the larger of their two freezes rather than one clobbering the other.
-  let hitstopFrames = 0;
+  // Set the instant stepOnce() decides the post-round result display has
+  // finished (resultTimer hit 0) - checked by loop() AFTER that step's own
+  // render() call runs, so the very last frame of the result screen still
+  // gets drawn (same order the old single-function loop() did draw-then-
+  // decrement-then-call-onEnd in) before onEnd() actually fires and this
+  // stops scheduling any further rAF.
+  let roundConcluded = false;
+  // Fixed-timestep accumulator (see the STEP_MS/MAX_STEPS_PER_FRAME/
+  // MAX_FRAME_DELTA_MS constants above) - real elapsed ms since the last
+  // rAF callback pile up here, and loop() below drains it in whole STEP_MS
+  // chunks, so stepOnce() always advances exactly 1/60s of game time per
+  // call no matter how often (or rarely) rAF itself actually fires.
+  // lastFrameTime is seeded right before the first requestAnimationFrame
+  // call below, not lazily on the first callback, so the accumulator
+  // reflects real time elapsed since setup rather than starting at exactly
+  // 0 - see the loop() call site for why.
+  let accumulatorMs = 0;
+  let lastFrameTime = 0;
   // COMBO_HITSTOP_TOTAL_MAX_FRAMES: computeHitstopFrames alone already caps
   // at 16 (fighter.js's HITSTOP_MAX_FRAMES) and computeComboFreezeBonus caps
   // its own contribution at 14, so 30 is already the natural ceiling of the
@@ -374,27 +669,24 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // binds today, but keeps that guarantee explicit here rather than only
   // true by coincidence of two separately-tuned constants in another file.
   const COMBO_HITSTOP_TOTAL_MAX_FRAMES = 30;
+  // Hitstop - counts down in real frames. While > 0, loop() below takes the
+  // early-return branch that freezes both fighters, projectiles, blood FX,
+  // and the round timer entirely (only input polling for buffer capture and
+  // drawing the current frame still run) - see computeHitstopFrames in
+  // fighter.js for the damage->frames formula and the
+  // "if (round.hitstopFrames > 0)" branch of loop() for the actual freeze.
+  // Set (never just assigned) via triggerHitstop so multiple hits landing
+  // the same frame always keep the larger of their two freezes rather than
+  // one clobbering the other.
+  //
   // comboCount defaults to 1 (computeComboFreezeBonus's own "not a combo
   // yet" floor) - every call site below only passes a real comboCount when
   // the hit actually landed clean (see each one's own comment), so a block/
   // parry never contributes a freeze bonus on top of its own flat hitstop.
   function triggerHitstop(damage, comboCount = 1) {
     const total = computeHitstopFrames(damage) + computeComboFreezeBonus(comboCount);
-    hitstopFrames = Math.max(hitstopFrames, Math.min(COMBO_HITSTOP_TOTAL_MAX_FRAMES, total));
+    round.hitstopFrames = Math.max(round.hitstopFrames, Math.min(COMBO_HITSTOP_TOTAL_MAX_FRAMES, total));
   }
-  const powerFullFired = { p1: false, p2: false };
-  const groundBlood = [];
-  const spatters = [];
-  const splatExtras = [];
-  const headPops = [];
-  const projectiles = [];
-  const impacts = [];
-  const hitSparks = [];
-  // Combo escalation FX - separate from impacts/hitSparks above (those are
-  // the plain per-hit feedback every landed hit already gets) so this layer
-  // can come and go with comboCount without touching that baseline.
-  const comboSwishes = [];
-  const comboPops = [];
 
   // Rough head height rather than a per-frame anchor lookup - matches the
   // same level-of-precision the blood-spatter positioning already uses.
@@ -462,7 +754,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // before this (this whole function used to bail out first thing unless
     // blood was unlocked), so a landed hit read as silently absorbed even
     // though damage really did register. See drawHitSpark in body.js.
-    hitSparks.push({ x: contactX, y: contactHeight, t: 0 });
+    fx.hitSparks.push({ x: contactX, y: contactHeight, t: 0 });
 
     // Combo charge-up escalation - always-on like the hit spark above (not
     // gated on the blood setting below), since it's readability/feel for the
@@ -477,15 +769,15 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // defender, away from the attacker) rather than a fixed orientation,
       // with a little jitter so repeated hits in one string don't all look
       // like the exact same stamp.
-      const swishRotation = (towardAttacker === -1 ? Math.PI : 0) + (Math.random() - 0.5) * 0.4;
+      const swishRotation = (towardAttacker === -1 ? Math.PI : 0) + (fxRng.float() - 0.5) * 0.4;
       // level 0/1/2 - see body.js's SWISH_LEVELS. SWISH_COLORED and POW share
       // level 1 (POW just additionally layers a pow burst on top of it);
       // BIG_POW steps up to level 2, the biggest swish art.
       const swishLevel = comboTier === COMBO_FX_TIER.SWISH ? 0 : comboTier === COMBO_FX_TIER.BIG_POW ? 2 : 1;
       const swishScale = comboTier === COMBO_FX_TIER.SWISH ? 1 : comboTier === COMBO_FX_TIER.BIG_POW ? 1.9 : 1.6;
-      comboSwishes.push({ x: contactX, y: contactHeight, rotation: swishRotation, scale: swishScale, level: swishLevel, t: 0 });
+      fx.comboSwishes.push({ x: contactX, y: contactHeight, rotation: swishRotation, scale: swishScale, level: swishLevel, t: 0 });
       if (comboTier === COMBO_FX_TIER.POW || comboTier === COMBO_FX_TIER.BIG_POW) {
-        comboPops.push({ x: contactX, y: contactHeight, scale: comboPowScale(defender.comboCount), big: comboTier === COMBO_FX_TIER.BIG_POW, t: 0 });
+        fx.comboPops.push({ x: contactX, y: contactHeight, scale: comboPowScale(defender.comboCount), big: comboTier === COMBO_FX_TIER.BIG_POW, t: 0 });
       }
     }
 
@@ -500,17 +792,17 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // ground), spots centered right at GROUND_Y read as too high, landing
     // behind/on the character instead of clearly on the ground in front of
     // and below them.
-    const spotCount = 4 + Math.floor(Math.random() * 4);
+    const spotCount = 4 + Math.floor(fxRng.float() * 4);
     for (let i = 0; i < spotCount; i++) {
-      groundBlood.push({
-        imgIndex: pickBloodSpotVariant(),
-        x: defenderCenterX + (Math.random() - 0.5) * 160,
-        y: GROUND_Y + 8 + Math.random() * 28,
-        size: 14 + Math.random() * 20,
-        rotation: Math.random() * Math.PI * 2,
+      fx.groundBlood.push({
+        imgIndex: pickBloodSpotVariant(fxRng.float()),
+        x: defenderCenterX + (fxRng.float() - 0.5) * 160,
+        y: GROUND_Y + 8 + fxRng.float() * 28,
+        size: 14 + fxRng.float() * 20,
+        rotation: fxRng.float() * Math.PI * 2,
       });
     }
-    while (groundBlood.length > MAX_GROUND_BLOOD) groundBlood.shift();
+    while (fx.groundBlood.length > MAX_GROUND_BLOOD) fx.groundBlood.shift();
 
     // A static splat layered behind the animated burst first, for extra
     // density - fully randomized position/rotation/scale each time so
@@ -518,26 +810,26 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // Spawned in mid-air at the contact point rather than on the ground, so
     // unlike groundBlood it doesn't stick around forever - it ages out (see
     // SPLAT_EXTRA_LIFETIME_FRAMES below) instead of hanging there.
-    const splatCount = 1 + Math.floor(Math.random() * 2);
+    const splatCount = 1 + Math.floor(fxRng.float() * 2);
     for (let i = 0; i < splatCount; i++) {
-      splatExtras.push({
-        x: contactX + (Math.random() - 0.5) * 24,
-        y: contactHeight + (Math.random() - 0.5) * 20,
-        variant: pickBloodSplatVariant(),
-        rotation: Math.random() * Math.PI * 2,
-        scale: 0.7 + Math.random() * 0.6,
+      fx.splatExtras.push({
+        x: contactX + (fxRng.float() - 0.5) * 24,
+        y: contactHeight + (fxRng.float() - 0.5) * 20,
+        variant: pickBloodSplatVariant(fxRng.float()),
+        rotation: fxRng.float() * Math.PI * 2,
+        scale: 0.7 + fxRng.float() * 0.6,
         t: 0,
       });
     }
-    while (splatExtras.length > MAX_GROUND_BLOOD) splatExtras.shift();
+    while (fx.splatExtras.length > MAX_GROUND_BLOOD) fx.splatExtras.shift();
 
-    const burstCount = 2 + Math.floor(Math.random() * 2);
+    const burstCount = 2 + Math.floor(fxRng.float() * 2);
     for (let i = 0; i < burstCount; i++) {
-      spatters.push({
-        x: contactX + (Math.random() - 0.5) * 14,
-        y: contactHeight + (Math.random() - 0.5) * 16,
-        rotation: Math.random() * Math.PI * 2,
-        t: -Math.floor(Math.random() * 3),
+      fx.spatters.push({
+        x: contactX + (fxRng.float() - 0.5) * 14,
+        y: contactHeight + (fxRng.float() - 0.5) * 16,
+        rotation: fxRng.float() * Math.PI * 2,
+        t: -Math.floor(fxRng.float() * 3),
       });
     }
   }
@@ -552,7 +844,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // instant a round ends - it used to only ever render from inside the
   // active-combat branch of loop().
   function drawGroundBlood() {
-    for (const decal of groundBlood) drawBloodSpot(ctx, decal);
+    for (const decal of fx.groundBlood) drawBloodSpot(ctx, decal);
   }
 
   // Impact/hit-point FX - static splats, the animated spatter burst, energy
@@ -567,10 +859,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // triggered by - the whole frozen moment holds on the same frame the hit
   // actually landed on, same as shake/flash not decaying during hitstop.
   function drawBloodFX(paused = false) {
-    for (let i = splatExtras.length - 1; i >= 0; i--) {
-      const s = splatExtras[i];
+    for (let i = fx.splatExtras.length - 1; i >= 0; i--) {
+      const s = fx.splatExtras[i];
       if (s.t >= SPLAT_EXTRA_LIFETIME_FRAMES) {
-        splatExtras.splice(i, 1);
+        fx.splatExtras.splice(i, 1);
         continue;
       }
       const fadeIn = SPLAT_EXTRA_LIFETIME_FRAMES - SPLAT_EXTRA_FADE_FRAMES;
@@ -581,31 +873,31 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       ctx.restore();
       if (!paused) s.t++;
     }
-    for (let i = spatters.length - 1; i >= 0; i--) {
-      const s = spatters[i];
+    for (let i = fx.spatters.length - 1; i >= 0; i--) {
+      const s = fx.spatters[i];
       const spriteFrame = Math.floor(s.t / SPATTER_TICKS_PER_FRAME);
       if (spriteFrame >= BLOOD_SPATTER_TOTAL_FRAMES) {
-        spatters.splice(i, 1);
+        fx.spatters.splice(i, 1);
         continue;
       }
       drawBloodSpatter(ctx, s.x, s.y, spriteFrame, s.rotation);
       if (!paused) s.t++;
     }
-    for (let i = impacts.length - 1; i >= 0; i--) {
-      const im = impacts[i];
+    for (let i = fx.impacts.length - 1; i >= 0; i--) {
+      const im = fx.impacts[i];
       const spriteFrame = Math.floor(im.t / IMPACT_TICKS_PER_FRAME);
       if (spriteFrame >= ENERGY_BURST_TOTAL_FRAMES) {
-        impacts.splice(i, 1);
+        fx.impacts.splice(i, 1);
         continue;
       }
       drawEnergyBurst(ctx, im.x, im.y, spriteFrame);
       if (!paused) im.t++;
     }
-    for (let i = hitSparks.length - 1; i >= 0; i--) {
-      const hs = hitSparks[i];
+    for (let i = fx.hitSparks.length - 1; i >= 0; i--) {
+      const hs = fx.hitSparks[i];
       const spriteFrame = Math.floor(hs.t / HIT_SPARK_TICKS_PER_FRAME);
       if (spriteFrame >= HIT_SPARK_TOTAL_FRAMES) {
-        hitSparks.splice(i, 1);
+        fx.hitSparks.splice(i, 1);
         continue;
       }
       drawHitSpark(ctx, hs.x, hs.y, spriteFrame);
@@ -616,10 +908,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // combo escalation reads as a distinct visual layer (drawn on top of the
     // baseline hit spark, same draw-order-is-front-to-back rule this whole
     // function follows).
-    for (let i = comboSwishes.length - 1; i >= 0; i--) {
-      const s = comboSwishes[i];
+    for (let i = fx.comboSwishes.length - 1; i >= 0; i--) {
+      const s = fx.comboSwishes[i];
       if (s.t >= COMBO_SWISH_LIFETIME_FRAMES) {
-        comboSwishes.splice(i, 1);
+        fx.comboSwishes.splice(i, 1);
         continue;
       }
       const fadeIn = COMBO_SWISH_LIFETIME_FRAMES - COMBO_SWISH_FADE_FRAMES;
@@ -630,19 +922,19 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       ctx.restore();
       if (!paused) s.t++;
     }
-    for (let i = comboPops.length - 1; i >= 0; i--) {
-      const p = comboPops[i];
+    for (let i = fx.comboPops.length - 1; i >= 0; i--) {
+      const p = fx.comboPops[i];
       if (p.t >= COMBO_POW_DURATION) {
-        comboPops.splice(i, 1);
+        fx.comboPops.splice(i, 1);
         continue;
       }
       drawComboPow(ctx, p.x, p.y, p.t, p.big, p.scale);
       if (!paused) p.t++;
     }
-    for (let i = headPops.length - 1; i >= 0; i--) {
-      const p = headPops[i];
+    for (let i = fx.headPops.length - 1; i >= 0; i--) {
+      const p = fx.headPops[i];
       if (p.t >= HEAD_POP_DURATION) {
-        headPops.splice(i, 1);
+        fx.headPops.splice(i, 1);
         continue;
       }
       drawHeadPop(ctx, p.x, p.y, p.t);
@@ -741,8 +1033,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // branches, so this naturally falls back to the plain SHAKE_ON_HIT/
       // no-freeze-bonus behavior for anything that isn't a genuine landed
       // hit, with no extra gating needed here.
-      shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
-      flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+      fx.shake = Math.max(fx.shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+      fx.flash = Math.max(fx.flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
       triggerHitstop(box.damage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
       if (!wasBlocking) spawnHitEffects(defender, attacker);
     }
@@ -792,10 +1084,22 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // instead of still knocking the guarding defender backward for free.
       const pushDir = defenderCenterX >= attackerCenterX ? 1 : -1;
       // Flies out over the knockback state's own duration (see
-      // setKnockbackMotion/jumpOffset in fighter.js) instead of teleporting
+      // enterKnockback/jumpOffset in fighter.js) instead of teleporting
       // straight to the final spot - a real launch-and-land arc, not an
-      // instant snap-then-freeze.
-      defender.setKnockbackMotion(pushDir, SLIDE.knockback);
+      // instant snap-then-freeze. holdFrames 0 - a plain slide hit is never
+      // a hard-knockdown-class landing (see enterKnockback's own comment).
+      //
+      // defender.state !== "ko" guard: takeDamage above already entered
+      // "knockback" once for this exact hit (its own bare
+      // this.enterKnockback(0, 0, 0) call, see fighter.js) and then, if this
+      // hit dropped health to 0, immediately overrode that to "ko" before
+      // ever returning here - re-entering "knockback" on top of "ko" would
+      // silently undo that KO (the defender would visibly fly backward
+      // instead of staying down), so this only ever fires for a slide that
+      // didn't just end the round.
+      if (defender.state !== "ko") {
+        defender.enterKnockback(pushDir, SLIDE.knockback, 0);
+      }
     }
     attacker.lastEvent = "slide-hit";
     // defender.lastComboEnder/comboCount are only ever touched by
@@ -804,8 +1108,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // the same way they already do for checkHit's block-taken case, so this
     // naturally falls back to plain SHAKE_ON_HIT/no freeze bonus with no
     // extra gating needed here, same as checkHit.
-    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
-    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    fx.shake = Math.max(fx.shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    fx.flash = Math.max(fx.flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
     triggerHitstop(attacker.slideDamage, defender.comboCount);
     // Full claret/impact FX only on a real, unblocked landing - matches
     // checkHit's own `if (!wasBlocking) spawnHitEffects(...)` gate exactly;
@@ -868,8 +1172,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // defender.comboCount (takeDamage's block branch owns that path
     // instead), so lastComboEnder/comboCount stay at their pre-hit values
     // and this correctly falls back to plain SHAKE_ON_HIT/no freeze bonus.
-    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
-    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    fx.shake = Math.max(fx.shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    fx.flash = Math.max(fx.flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
     triggerHitstop(attacker.uppercutDamage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
     spawnHitEffects(defender, attacker);
   }
@@ -942,8 +1246,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       attacker.onLandedHit("airKick");
       attacker.lastEvent = "air-attack-hit";
     }
-    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
-    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    fx.shake = Math.max(fx.shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    fx.flash = Math.max(fx.flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
     triggerHitstop(attacker.airAttackDamage, defender.lastEvent === "hit-taken" || defender.lastEvent === "ko" ? defender.comboCount : 1);
     if (!wasBlocking) spawnHitEffects(defender, attacker);
   }
@@ -957,13 +1261,35 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (fighter.lastEvent !== "special-release") return;
     const isRatRush = fighter.data.archetypeKey === "Flipper";
     if (!isRatRush) playSound("boltWhoosh", { volume: 0.6 });
-    projectiles.push({
+    round.projectiles.push({
       kind: isRatRush ? "ratrush" : "bolt",
       x: fighter.x + BODY_CENTER_OFFSET + fighter.facing * 34,
       y: isRatRush ? GROUND_Y : PROJECTILE_Y,
       facing: fighter.facing,
-      owner: fighter,
+      // Index (0|1) into `fighters`, not a Fighter reference - see
+      // createRoundState's own comment above for why round.projectiles must
+      // stay plain, serializable data. fighter here is always exactly one of
+      // the two Fighter instances in `fighters` (this is only ever called as
+      // spawnProjectile(p1)/spawnProjectile(p2) below), so indexOf always
+      // resolves to a real 0 or 1, never -1.
+      owner: fighters.indexOf(fighter),
       t: 0,
+      // Bugfix (review S6): declared here even though a bolt/rat-rush never
+      // actually uses them - `vx` is homing-only (see spawnHomingProjectile
+      // below), `pulsesLeft`/`pulseCooldown` only get assigned once this
+      // same projectile object reaches its first hit (the "First contact
+      // starts the flurry" branch further down). Before this fix those
+      // three fields didn't exist on a bolt/rat-rush object AT ALL until
+      // that first hit - a projectile is exactly the part of `round` a step
+      // (f) FNV checksum will hash, and two peers whose bolts happen to be
+      // mid-flight vs. already-hit at the moment a checksum is taken would
+      // literally hash different SHAPES of the same conceptual object
+      // (missing keys vs. present ones), not just different values.
+      // Design A's `projectiles[8]+count` spec calls for every field
+      // declared up front for exactly this reason.
+      vx: 0,
+      pulsesLeft: 0,
+      pulseCooldown: 0,
     });
   }
 
@@ -978,7 +1304,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   function spawnHomingProjectile(fighter) {
     if (fighter.lastEvent !== "air-special-release") return;
     playSound("boltWhoosh", { volume: 0.6, rate: 1.25 });
-    projectiles.push({
+    round.projectiles.push({
       kind: "homing",
       x: fighter.x + BODY_CENTER_OFFSET + fighter.facing * 34,
       // Launched from the caster's OWN current airborne height (not a fixed
@@ -994,8 +1320,17 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // starts correcting it toward the target's actual position tick over
       // tick (see HOMING_TURN_RATE's own comment above).
       vx: fighter.facing * HOMING_SPEED,
-      owner: fighter,
+      // Same index convention as spawnProjectile above - see its comment.
+      owner: fighters.indexOf(fighter),
       t: 0,
+      // Bugfix (review S6): homing never pulses (single-hit, see
+      // applyHomingHit below), but declaring these here too - same as
+      // spawnProjectile now does for `vx` - keeps every projectile object
+      // the exact same shape from spawn to despawn, whichever kind it is.
+      // See spawnProjectile's own comment above for the full checksum-shape
+      // reasoning.
+      pulsesLeft: 0,
+      pulseCooldown: 0,
     });
   }
 
@@ -1013,12 +1348,16 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // hit, or, precisely when it's needed most, extends an existing juggle
   // sequence through that SAME decay/hit-cap machinery, never bypassing it.
   function applyHomingHit(p, target) {
-    target.takeDamage(p.owner.airSpecialDamage, p.x, "special");
-    p.owner.onLandedHit("special");
+    // p.owner is an index (0|1) now, not a Fighter ref - see spawnProjectile's
+    // own comment above for why - so every read of "the fighter who threw
+    // this" goes through fighters[p.owner] instead of dereferencing directly.
+    const owner = fighters[p.owner];
+    target.takeDamage(owner.airSpecialDamage, p.x, "special");
+    owner.onLandedHit("special");
     playSound("boltImpact", { volume: 0.65, rate: 1.1 });
-    shake = Math.max(shake, target.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
-    flash = Math.max(flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
-    triggerHitstop(p.owner.airSpecialDamage, target.comboCount);
+    fx.shake = Math.max(fx.shake, target.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_HIT);
+    fx.flash = Math.max(fx.flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    triggerHitstop(owner.airSpecialDamage, target.comboCount);
     spawnHitEffects(target, { x: p.x - BODY_CENTER_OFFSET, state: "special" });
     // Juggled fighters never move horizontally on purpose - see the big
     // "Airborne juggle" comment in fighter.js: update()'s own "juggled"
@@ -1031,7 +1370,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     if (target.state !== "juggled") {
       target.x = Math.max(ARENA_MIN_X, Math.min(ARENA_MAX_X, target.x + p.facing * SPECIAL_PULSE_KNOCKBACK));
     }
-    impacts.push({ x: p.x, y: p.y, t: 0 });
+    fx.impacts.push({ x: p.x, y: p.y, t: 0 });
   }
 
   // One beat of the bolt/rat-rush flurry - shared by the instant-of-contact
@@ -1052,15 +1391,17 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // hitstop beats, more pushback, a longer stun) rather than a bigger number
   // than the old single hit.
   function applySpecialPulse(p, target, isRatRush, isFinalPulse) {
-    const pulseDamage = p.owner.specialDamage / SPECIAL_PULSE_COUNT;
+    // p.owner is an index - see applyHomingHit's own comment above.
+    const owner = fighters[p.owner];
+    const pulseDamage = owner.specialDamage / SPECIAL_PULSE_COUNT;
     target.takeDamage(pulseDamage, p.x, "special");
-    p.owner.onLandedHit("special");
+    owner.onLandedHit("special");
     // Same dedicated-impact-sound-vs-shared-thud split the old single-hit
     // version used - just now on every pulse, quieter on the opening/middle
     // beats and back to full volume on the one that actually ends the
     // flurry, so the finisher still reads as the loudest moment.
     if (isRatRush) {
-      p.owner.lastEvent = "special-hit";
+      owner.lastEvent = "special-hit";
     } else {
       playSound("boltImpact", { volume: isFinalPulse ? 0.7 : 0.45 });
     }
@@ -1072,8 +1413,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // either with SHAKE_ON_ENDER/FLASH_ON_ENDER on its own terms - unchanged
     // from every other hit branch in this file.
     const baseShake = isFinalPulse ? SHAKE_ON_SPECIAL : SHAKE_ON_HIT;
-    shake = Math.max(shake, target.lastComboEnder ? SHAKE_ON_ENDER : baseShake);
-    flash = Math.max(flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    fx.shake = Math.max(fx.shake, target.lastComboEnder ? SHAKE_ON_ENDER : baseShake);
+    fx.flash = Math.max(fx.flash, target.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
     // Same reasoning as checkBuilderSpecialHit - a
     // projectile connecting always registers as a real hit (specials bypass
     // block/parry), so target.comboCount/lastComboEnder are always
@@ -1097,7 +1438,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // bigger energy-burst on every single beat just read as clutter in
     // testing rather than a flurry building to a finish.
     if (isFinalPulse) {
-      impacts.push({ x: p.x, y: isRatRush ? GROUND_Y - 20 : p.y, t: 0 });
+      fx.impacts.push({ x: p.x, y: isRatRush ? GROUND_Y - 20 : p.y, t: 0 });
     }
   }
 
@@ -1105,8 +1446,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // frame (via spawnProjectile above) still gets its first move/hit-check
   // immediately rather than sitting a frame behind.
   function updateProjectiles() {
-    for (let i = projectiles.length - 1; i >= 0; i--) {
-      const p = projectiles[i];
+    for (let i = round.projectiles.length - 1; i >= 0; i--) {
+      const p = round.projectiles[i];
 
       // Homing special - entirely its own branch, not a variant of the
       // bolt/rat-rush's own pulsesLeft/dodge machinery below (that logic
@@ -1117,10 +1458,13 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // "ratrush" so it falls into that existing branch with no new draw
       // code needed) as every other projectile in this file.
       if (p.kind === "homing") {
-        const homingTarget = p.owner === p1 ? p2 : p1;
+        // p.owner is an index (0|1) - "the other fighter" is just the other
+        // slot in the 2-element `fighters` array, same trick every other
+        // index-based owner/target lookup in this file now uses.
+        const homingTarget = fighters[1 - p.owner];
         p.t++;
         if (homingTarget.state === "ko") {
-          projectiles.splice(i, 1);
+          round.projectiles.splice(i, 1);
           continue;
         }
         // Movement/steering happens every tick regardless of dodge state,
@@ -1168,18 +1512,19 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         const dodged = homingTarget.state === "crouch" || homingTarget.state === "blockLow";
         if (!dodged && Math.abs(targetCenterX - p.x) < HOMING_HIT_RADIUS) {
           applyHomingHit(p, homingTarget);
-          projectiles.splice(i, 1);
+          round.projectiles.splice(i, 1);
           continue;
         }
 
         if (p.t > HOMING_MAX_LIFETIME_FRAMES || p.x < ARENA_MIN_X - 60 || p.x > ARENA_MAX_X + 60) {
-          projectiles.splice(i, 1);
+          round.projectiles.splice(i, 1);
         }
         continue;
       }
 
       const isRatRush = p.kind === "ratrush";
-      const target = p.owner === p1 ? p2 : p1;
+      // Same index-based lookup as the homing branch above.
+      const target = fighters[1 - p.owner];
 
       // Already latched onto the target from an earlier tick this same
       // flight - pulsesLeft only ever counts down (see SPECIAL_PULSE_COUNT's
@@ -1199,14 +1544,14 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         // the flurry immediately rather than continuing to push/flash a
         // fighter who's already down.
         if (target.state === "ko") {
-          projectiles.splice(i, 1);
+          round.projectiles.splice(i, 1);
           continue;
         }
         if (--p.pulseCooldown > 0) continue;
         p.pulsesLeft--;
         applySpecialPulse(p, target, isRatRush, p.pulsesLeft === 0);
         if (p.pulsesLeft <= 0) {
-          projectiles.splice(i, 1);
+          round.projectiles.splice(i, 1);
         } else {
           p.pulseCooldown = SPECIAL_PULSE_INTERVAL_FRAMES;
         }
@@ -1247,7 +1592,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
           p.pulsesLeft = SPECIAL_PULSE_COUNT - 1;
           p.pulseCooldown = SPECIAL_PULSE_INTERVAL_FRAMES;
           applySpecialPulse(p, target, isRatRush, p.pulsesLeft === 0);
-          if (p.pulsesLeft <= 0) projectiles.splice(i, 1);
+          if (p.pulsesLeft <= 0) round.projectiles.splice(i, 1);
           continue;
         }
       }
@@ -1255,7 +1600,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // Missed and flew off the edge of the arena - fizzles out quietly
       // rather than bursting against a wall that isn't really there.
       if (p.x < ARENA_MIN_X - 60 || p.x > ARENA_MAX_X + 60) {
-        projectiles.splice(i, 1);
+        round.projectiles.splice(i, 1);
       }
     }
   }
@@ -1288,8 +1633,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // Specials blow straight through block/parry (takeDamage's kind !==
     // "special" guard), so this always lands as a real hit - comboCount/
     // lastComboEnder are always meaningful here, no gate needed.
-    shake = Math.max(shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_SPECIAL);
-    flash = Math.max(flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
+    fx.shake = Math.max(fx.shake, defender.lastComboEnder ? SHAKE_ON_ENDER : SHAKE_ON_SPECIAL);
+    fx.flash = Math.max(fx.flash, defender.lastComboEnder ? FLASH_ON_ENDER : FLASH_ON_HIT);
     triggerHitstop(attacker.builderSpecialDamage, defender.comboCount);
     spawnHitEffects(defender, { x: attacker.x, state: "uppercut" });
   }
@@ -1337,7 +1682,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
         break;
       case "ko":
         playSound("ko");
-        headPops.push({ x: fighter.x, y: HEAD_Y, t: 0 });
+        fx.headPops.push({ x: fighter.x, y: HEAD_Y, t: 0 });
         break;
       // The actual ground-impact beat of a spike ender - see fighter.js's
       // applyJuggleSpike/the "juggled" branch's own landing check for how
@@ -1356,8 +1701,8 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
       // top of the shake, is what makes this actually read as a slam.
       case "hard-knockdown-land":
         playSound("hit", { rate: 0.6, volume: 0.9 });
-        shake = Math.max(shake, SHAKE_ON_HIT);
-        impacts.push({ x: fighter.x + BODY_CENTER_OFFSET, y: GROUND_Y - 10, t: 0 });
+        fx.shake = Math.max(fx.shake, SHAKE_ON_HIT);
+        fx.impacts.push({ x: fighter.x + BODY_CENTER_OFFSET, y: GROUND_Y - 10, t: 0 });
         break;
     }
   }
@@ -1375,15 +1720,15 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     p1PowerEl.classList.toggle("power-ready", p1PowerPct >= 100);
     p2PowerEl.classList.toggle("power-ready", p2PowerPct >= 100);
 
-    if (p1PowerPct >= 100 && !powerFullFired.p1) {
-      powerFullFired.p1 = true;
+    if (p1PowerPct >= 100 && !round.powerFullFired.p1) {
+      round.powerFullFired.p1 = true;
       playSound("powerfull");
-    } else if (p1PowerPct < 100) powerFullFired.p1 = false;
+    } else if (p1PowerPct < 100) round.powerFullFired.p1 = false;
 
-    if (p2PowerPct >= 100 && !powerFullFired.p2) {
-      powerFullFired.p2 = true;
+    if (p2PowerPct >= 100 && !round.powerFullFired.p2) {
+      round.powerFullFired.p2 = true;
       playSound("powerfull");
-    } else if (p2PowerPct < 100) powerFullFired.p2 = false;
+    } else if (p2PowerPct < 100) round.powerFullFired.p2 = false;
   }
 
   // Prefers a quote the fighter hasn't already said pre-fight (their
@@ -1393,7 +1738,7 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     const history = fighter.data.talkHistory ?? [];
     const fresh = history.filter((q) => q !== fighter.data.taunt);
     const pool = fresh.length > 0 ? fresh : history;
-    if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length > 0) return pool[Math.floor(fxRng.float() * pool.length)];
     return fighter.data.taunt ?? null;
   }
 
@@ -1403,10 +1748,16 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
   // animation) get to play out instead of freezing the instant the round
   // is decided.
   function endRound(winner) {
-    if (ended) return;
-    ended = true;
-    roundWinner = winner;
-    resultTimer = RESULT_DISPLAY_FRAMES;
+    if (round.ended) return;
+    round.ended = true;
+    // fighters.indexOf(null) is -1 (no element === null), which is exactly
+    // the "draw / no winner" sentinel round.roundWinner uses - same
+    // conversion for the real win case (indexOf(p1) -> 0, indexOf(p2) -> 1),
+    // no separate branch needed. See createRoundState's own comment above
+    // for why round itself only ever stores the index, never `winner`
+    // (a Fighter ref) directly.
+    round.roundWinner = fighters.indexOf(winner);
+    round.resultTimer = RESULT_DISPLAY_FRAMES;
     const titleEl = document.getElementById("result-title");
     if (winner) {
       winner.setState("flex");
@@ -1432,29 +1783,45 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     document.getElementById("result").classList.remove("hidden");
   }
 
-  function loop() {
-    if (stopped) return;
+  // Mutates sim state by exactly one fixed 60 Hz step - no drawing. Same
+  // three branches the old single-function loop() ran inline (post-round
+  // result countdown, hitstop freeze, normal tick), in the same order and
+  // with the same semantics as before; render() below draws whatever this
+  // last left behind. shake/flash's own decay stays in render() rather than
+  // moving here - see render()'s comment for why.
+  function stepOnce() {
+    // Extra catch-up steps (accumulator draining faster than the round
+    // actually concludes) must not re-run this or call onEnd more than
+    // once - see loop() below for where roundConcluded actually stops
+    // further steps AND stops scheduling more rAF.
+    if (roundConcluded) return;
 
-    if (ended) {
+    if (round.ended) {
       // Combat logic (input, hits, movement) is done - just keep the last
-      // pose animating (winner's flex, loser's own hitstun/KO) and the
-      // frame rendering instead of freezing on whatever frame the round
-      // happened to end on.
+      // pose animating (winner's flex, loser's own hitstun/KO) instead of
+      // freezing on whatever frame the round happened to end on. Rendering
+      // this still happens every step, same as before - render() below.
       p1.stateT++;
       p2.stateT++;
-      ctx.save();
-      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
-      drawGroundBlood();
-      drawFighter(ctx, p1, 1);
-      drawFighter(ctx, p2, 2);
-      drawBloodFX();
-      ctx.restore();
-      resultTimer--;
-      if (resultTimer <= 0) {
-        if (onEnd) onEnd(roundWinner);
-        return;
+      round.resultTimer--;
+      // Nit (review N3): this branch reads no input at all, but it's still
+      // a step - leaving the latch sets undrained here means whatever keys/
+      // gamepad presses landed during the LAST live step stay "latched"
+      // into this result-screen period instead of being cleared like every
+      // other step already clears them, so the very first step of the NEXT
+      // round would see phantom held-then-released inputs from before this
+      // round even ended. Harmless today only because nothing here reads
+      // pressed/latched/gamepad state; draining defensively rather than
+      // relying on that staying true.
+      clearLatchedKeys();
+      clearGamepadLatch();
+      if (round.resultTimer <= 0) {
+        // Deferred rather than calling onEnd() right here: the old
+        // loop() drew this exact final frame BEFORE calling onEnd, and
+        // render() (called once per rAF, after the whole step loop) needs
+        // to run first to preserve that order - see loop() below.
+        roundConcluded = true;
       }
-      requestAnimationFrame(loop);
       return;
     }
 
@@ -1465,9 +1832,10 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // still for a few frames before knockback/hitstun actually starts
     // playing - `frame` itself doesn't advance and neither does the
     // once-per-60-frames timer tick below, so hitstop truly doesn't cost the
-    // clock any time. shake/flash are drawn at whatever their current value
-    // is but deliberately NOT decayed here, so the screen holds at the
-    // impact's peak for the whole freeze instead of fading out mid-stop.
+    // clock any time. shake/flash are drawn (in render()) at whatever their
+    // current value is but deliberately NOT decayed during hitstop, so the
+    // screen holds at the impact's peak for the whole freeze instead of
+    // fading out mid-stop.
     //
     // Input is still polled and fed to Fighter.tickInputOnly (edge-detection
     // + the input buffer only - no state/position change) for whichever
@@ -1475,59 +1843,52 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // gets buffered instead of silently vanishing (see INPUT_BUFFER_FRAMES
     // in fighter.js). The AI side is deliberately skipped entirely here -
     // getAIInput() advances its own internal think-timer every call, and
-    // calling it on frozen frames would speed up the AI's decision cadence
+    // calling it on frozen steps would speed up the AI's decision cadence
     // relative to a human's, which is exactly the kind of timing drift that
     // could reopen the crouch-exploit fix in ai.js (that fix depends on the
     // AI's read of `opponent.state` lining up with real elapsed frames).
-    if (hitstopFrames > 0) {
-      hitstopFrames--;
-      const p1Gamepad = findGamepad();
-      const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
-      p1.tickInputOnly(withGamepad(readInput(KEYMAP.p1), p1Gamepad));
+    if (round.hitstopFrames > 0) {
+      round.hitstopFrames--;
+      p1.tickInputOnly(withGamepad(readInput(KEYMAP.p1), readGamepadMask(p1GamepadHeld, p1GamepadLatched)));
       if (!getAIInput) {
-        p2.tickInputOnly(practiceMode ? emptyP2Input : withGamepad(readInput(KEYMAP.p2), p2Gamepad));
+        p2.tickInputOnly(
+          practiceMode ? emptyP2Input : withGamepad(readInput(KEYMAP.p2), readGamepadMask(p2GamepadHeld, p2GamepadLatched)),
+        );
       }
-
-      ctx.save();
-      if (shake > 0) {
-        ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
-      }
-      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
-      drawGroundBlood();
-      drawFighter(ctx, p1, 1);
-      drawFighter(ctx, p2, 2);
-      drawComboCounter(p1);
-      drawComboCounter(p2);
-      for (const p of projectiles) {
-        if (p.kind === "ratrush") {
-          drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
-        } else {
-          drawSurgeBlast(ctx, p.x, p.y, Math.floor(p.t / PROJECTILE_SPRITE_TICKS_PER_FRAME), p.facing);
-        }
-      }
-      drawBloodFX(true);
-      ctx.restore();
-      if (flash > 0) drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, flash);
-
-      if (!stopped) requestAnimationFrame(loop);
+      clearLatchedKeys();
+      clearGamepadLatch();
       return;
     }
 
-    frame++;
+    round.frame++;
 
-    // Resolved fresh every frame (not cached) so a controller plugged in or
-    // unplugged mid-match takes effect immediately, and p1's gamepad is
+    // Gamepad state itself is polled once per rAF by pollGamepads() (called
+    // from loop() below), so a controller plugged in or unplugged mid-match
+    // still takes effect within one rendered frame, and p1's pad is
     // whichever one the browser actually reports first - not assumed to be
-    // index 0 (see withGamepad's comment above for why that assumption
-    // broke in practice).
-    const p1Gamepad = findGamepad();
-    const p2Gamepad = findGamepad(p1Gamepad ? p1Gamepad.index : -1);
+    // index 0, see findGamepad's own comment for why that assumption broke
+    // in practice. What's read here is readGamepadMask(held, latched) - see
+    // that pair's own comment above (review S3) for why BOTH halves matter:
+    // held keeps a steadily-pressed direction/button visible to every step
+    // of a multi-step catch-up (routine at any display slower than 60 Hz,
+    // not just a stall), latched catches a tap that landed in a zero-step
+    // rAF callback or a rapid-fire pad's double-tap between two steps.
+    //
     // opponent passed through purely for the standing punch chain's
     // anti-crouch groundPunch check and pickAirAttackState's own cosmetic
     // pose choice (see fighter.js) - never read for hit detection, which
     // stays entirely in checkHit/etc below, run after both updates.
-    p1.update(withGamepad(readInput(KEYMAP.p1), p1Gamepad), p2);
-    p2.update(practiceMode ? emptyP2Input : getAIInput ? getAIInput() : withGamepad(readInput(KEYMAP.p2), p2Gamepad), p1);
+    p1.update(withGamepad(readInput(KEYMAP.p1), readGamepadMask(p1GamepadHeld, p1GamepadLatched)), p2);
+    p2.update(
+      practiceMode
+        ? emptyP2Input
+        : getAIInput
+          ? getAIInput()
+          : withGamepad(readInput(KEYMAP.p2), readGamepadMask(p2GamepadHeld, p2GamepadLatched)),
+      p1,
+    );
+    clearLatchedKeys();
+    clearGamepadLatch();
     // The dummy tops back up to full once it's recovered from the last
     // combo (back to idle) rather than sitting there half-dead or at 0 -
     // real hit feedback lands every time (health bar actually drops during
@@ -1577,37 +1938,9 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // it run would otherwise end "practice" via the timeout ratio-compare
     // below the instant the dummy takes any damage at all (p1 undamaged
     // always reads as the higher ratio).
-    if (!practiceMode && frame % 60 === 0 && timeLeft > 0) {
-      timeLeft--;
-      document.getElementById("timer").textContent = timeLeft;
-    }
-
-    ctx.save();
-    if (shake > 0) {
-      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
-      shake *= 0.8;
-      if (shake < 0.5) shake = 0;
-    }
-    drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
-    drawGroundBlood();
-    drawFighter(ctx, p1, 1);
-    drawFighter(ctx, p2, 2);
-    drawComboCounter(p1);
-    drawComboCounter(p2);
-    for (const p of projectiles) {
-      if (p.kind === "ratrush") {
-        drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
-      } else {
-        drawSurgeBlast(ctx, p.x, p.y, Math.floor(p.t / PROJECTILE_SPRITE_TICKS_PER_FRAME), p.facing);
-      }
-    }
-    drawBloodFX();
-    ctx.restore();
-
-    if (flash > 0) {
-      drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, flash);
-      flash *= 0.75;
-      if (flash < 0.02) flash = 0;
+    if (!practiceMode && round.frame % 60 === 0 && round.timeLeft > 0) {
+      round.timeLeft--;
+      document.getElementById("timer").textContent = round.timeLeft;
     }
 
     // Practice never ends on its own - see exit-match-btn (main.js) for
@@ -1618,33 +1951,193 @@ export function createGame({ ctx, p1, p2, onEnd, timeLimit = 60, p2AI = false, p
     // same frame it drops health to 0 (checkHit/etc above run before this),
     // so without this guard endRound would fire - and `ended` would flip
     // true - before the freeze this exact hit just queued ever got a chance
-    // to play (loop()'s `if (ended)` branch is checked ahead of the
+    // to play (stepOnce's `if (ended)` branch is checked ahead of the
     // hitstop branch, so an already-ended round would skip the freeze
-    // entirely next tick). Deferring the win check until hitstop has fully
+    // entirely next step). Deferring the win check until hitstop has fully
     // drained means the KO hit's own freeze plays out first, then the round
-    // ends on the frame right after - so the biggest hits of the match
+    // ends on the step right after - so the biggest hits of the match
     // (the ones that end it) are the ones guaranteed to actually get their
     // impact pause instead of being cut short.
-    if (!practiceMode && hitstopFrames === 0) {
+    if (!practiceMode && round.hitstopFrames === 0) {
       if (p1.health <= 0 && p2.health <= 0) endRound(null);
       else if (p1.health <= 0) endRound(p2);
       else if (p2.health <= 0) endRound(p1);
-      else if (timeLeft <= 0) {
+      else if (round.timeLeft <= 0) {
         const p1Ratio = p1.health / p1.maxHealth;
         const p2Ratio = p2.health / p2.maxHealth;
         if (p1Ratio === p2Ratio) endRound(null);
         else endRound(p1Ratio > p2Ratio ? p1 : p2);
       }
     }
+  }
 
-    // Always continues (unlike the old `if (!ended)` gate) - the very next
-    // tick is what lets the `if (ended)` branch above actually run and
-    // start the flex/result display instead of the round-ending frame just
-    // being the last one ever rendered.
+  // Draws whatever stepOnce() last left the sim state as - reads, never
+  // mutates, anything stepOnce() itself owns. Branches on the same
+  // conditions the tick used (ended / hitstopFrames>0 / normal), so it
+  // always matches whichever of stepOnce()'s three branches most recently
+  // ran, even when several stepOnce() calls happened before this single
+  // render() call (a display running faster than the sim catching the
+  // accumulator up across more than one step).
+  //
+  // Two exceptions, both pre-existing rather than introduced by this split,
+  // deliberately left as-is: drawBloodFX (below) ages/expires its own FX
+  // arrays as a side effect of being drawn, and shake/flash's decay
+  // (`shake *= 0.8` / `flash *= 0.75` below) has always lived at draw time,
+  // not tick time. Moving either into stepOnce() would decay them once per
+  // SIM STEP instead of once per RENDERED frame, which changes what's
+  // actually on screen: a hit sets shake/flash mid-tick and this has always
+  // shown it at full strength on the very frame it's first drawn, decaying
+  // only for frames after that - decaying before that first draw would show
+  // every hit already-faded. Both are cosmetic-only (grep confirms neither
+  // is ever read by sim/combat logic, only written by it and read here), so
+  // this is display-rate-dependent FX timing, not sim-affecting - the same
+  // category of known impurity Design A step (e) fixes for real by moving
+  // all of this into a proper present/ layer.
+  function render() {
+    if (round.ended) {
+      ctx.save();
+      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
+      drawGroundBlood();
+      drawFighter(ctx, p1, 1);
+      drawFighter(ctx, p2, 2);
+      drawBloodFX();
+      ctx.restore();
+      return;
+    }
+
+    if (round.hitstopFrames > 0) {
+      ctx.save();
+      if (fx.shake > 0) {
+        ctx.translate((shakeRng.float() - 0.5) * fx.shake, (shakeRng.float() - 0.5) * fx.shake);
+      }
+      drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
+      drawGroundBlood();
+      drawFighter(ctx, p1, 1);
+      drawFighter(ctx, p2, 2);
+      drawComboCounter(p1);
+      drawComboCounter(p2);
+      for (const p of round.projectiles) {
+        if (p.kind === "ratrush") {
+          drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
+        } else {
+          drawSurgeBlast(ctx, p.x, p.y, Math.floor(p.t / PROJECTILE_SPRITE_TICKS_PER_FRAME), p.facing);
+        }
+      }
+      drawBloodFX(true);
+      ctx.restore();
+      if (fx.flash > 0) drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, fx.flash);
+      return;
+    }
+
+    ctx.save();
+    if (fx.shake > 0) {
+      ctx.translate((shakeRng.float() - 0.5) * fx.shake, (shakeRng.float() - 0.5) * fx.shake);
+      fx.shake *= 0.8;
+      if (fx.shake < 0.5) fx.shake = 0;
+    }
+    drawArena(ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
+    drawGroundBlood();
+    drawFighter(ctx, p1, 1);
+    drawFighter(ctx, p2, 2);
+    drawComboCounter(p1);
+    drawComboCounter(p2);
+    for (const p of round.projectiles) {
+      if (p.kind === "ratrush") {
+        drawRatRush(ctx, p.x, p.y, Math.floor(p.t / RAT_RUSH_SPRITE_TICKS_PER_FRAME), p.facing);
+      } else {
+        drawSurgeBlast(ctx, p.x, p.y, Math.floor(p.t / PROJECTILE_SPRITE_TICKS_PER_FRAME), p.facing);
+      }
+    }
+    drawBloodFX();
+    ctx.restore();
+
+    if (fx.flash > 0) {
+      drawFlash(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, fx.flash);
+      fx.flash *= 0.75;
+      if (fx.flash < 0.02) fx.flash = 0;
+    }
+  }
+
+  // Fixed-timestep driver - accumulates real elapsed ms (clamped, see
+  // MAX_FRAME_DELTA_MS) from the rAF timestamp and drains it in whole
+  // STEP_MS chunks, capped at MAX_STEPS_PER_FRAME catch-up steps per
+  // callback. render() always runs exactly once per rAF regardless of how
+  // many (zero, one, or several) stepOnce() calls happened this callback,
+  // so a 144 Hz display still simulates at 60 Hz but renders at 144 Hz
+  // (smooth motion, correct speed) while a 30 Hz display simulates the
+  // same 60 Hz by running two steps most callbacks.
+  function loop(rafTime) {
+    if (stopped) return;
+
+    const now = typeof rafTime === "number" ? rafTime : performance.now();
+    // Clamped both ends (review N2): the upper bound is the existing
+    // catch-up cap, the lower bound guards a `rafTime` that precedes
+    // `lastFrameTime` (seeded from performance.now() below, not from the
+    // first rAF callback's own timestamp - in principle the two clocks
+    // could disagree by a hair on the very first frame). Without the floor
+    // a negative delta would silently DECREMENT the accumulator instead of
+    // doing nothing, quietly stealing sim time from the very start of the
+    // match.
+    accumulatorMs += Math.max(0, Math.min(now - lastFrameTime, MAX_FRAME_DELTA_MS));
+    lastFrameTime = now;
+
+    // Once per rAF, unconditionally - including a callback that ends up
+    // running zero stepOnce() calls (accumulator still under STEP_MS) - so
+    // a poll that lands in a "quiet" callback still reaches the OR-latch
+    // instead of being skipped because no step happened to ask for it. See
+    // p1GamepadLatched/pollGamepads' own comment above (review S3).
+    pollGamepads();
+
+    let steps = 0;
+    while (accumulatorMs >= STEP_MS && steps < MAX_STEPS_PER_FRAME && !roundConcluded) {
+      stepOnce();
+      accumulatorMs -= STEP_MS;
+      steps++;
+    }
+    // A stall deep enough to hit the step cap (backgrounded tab, a long GC
+    // pause) would otherwise leave a large leftover accumulator that then
+    // tries to burn down over several more real frames, each one still
+    // maxed out at MAX_STEPS_PER_FRAME - visibly "catching up" in slow
+    // motion for a beat. Dropping it here instead trades a small, one-time
+    // loss of wall-clock accuracy for the sim snapping straight back to
+    // real time on the very next callback.
+    //
+    // Bugfix (review S1): this used to fire on `steps === MAX_STEPS_PER_FRAME`,
+    // which is also true on ORDINARY frames well below any real stall - not
+    // just a genuine backlog. At a steady 15 Hz, each callback carries
+    // 66.667 ms: one callback drains 4 steps (66.667 ms, hitting the cap)
+    // and would leave a 16.667 ms remainder just shy of another STEP_MS -
+    // except the old `=== MAX_STEPS` check zeroed that remainder every
+    // time this happened, silently discarding a fraction of a step on
+    // every single callback and dragging the sim below 60 steps/s on any
+    // display slower than ~20 Hz (measured: 15 Hz fell to 56.4 steps/s,
+    // 10 Hz to 40). The same discard also fired on any single ~70 ms hitch
+    // at a normal 60 Hz. Comparing the total backlog against the cap
+    // instead of comparing the loop's own iteration count only resets on a
+    // genuine multi-step-cap backlog, and preserves the sub-step remainder
+    // (real time already banked toward the next tick) on every ordinary
+    // frame, however many steps it happened to take.
+    if (accumulatorMs > STEP_MS * MAX_STEPS_PER_FRAME) accumulatorMs = 0;
+
+    render();
+
+    if (roundConcluded) {
+      // Mirrors the old loop()'s own "draw the final frame, then call
+      // onEnd and stop scheduling more rAF" order - render() just drew
+      // that last frame above, so this is safe to fire now. Converts
+      // round.roundWinner back from its internal index (0|1|-1) to the
+      // Fighter-ref-or-null shape createGame's onEnd contract has always
+      // had (main.js compares this against p1/p2 directly) - see
+      // endRound()'s own comment for the other half of this conversion.
+      if (onEnd) onEnd(round.roundWinner === -1 ? null : fighters[round.roundWinner]);
+      return;
+    }
+
     if (!stopped) requestAnimationFrame(loop);
   }
 
-  document.getElementById("timer").textContent = practiceMode ? "∞" : timeLeft;
+  document.getElementById("timer").textContent = practiceMode ? "∞" : round.timeLeft;
+  lastFrameTime = performance.now();
   requestAnimationFrame(loop);
 
   return () => {

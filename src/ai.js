@@ -42,13 +42,35 @@ function emptyInput() {
   };
 }
 
-export function createAIController(self, opponent) {
-  let input = emptyInput();
-  let thinkAt = 0;
-  let frame = 0;
+// `rng` is the outcome stream (Design A step c - see rng.js and game.js's
+// round-rng adapter): every decision below reads rng.float() instead of
+// Math.random() so the AI's play is a pure function of (seed, round index,
+// draw streak), replayable and agreeable across two future netcode peers.
+//
+// `round`/`side` (review S4, fixing this file's own earlier doc comment):
+// the re-think schedule (`thinkAt`) and last-decided `input` used to be
+// local closure `let`s, on the theory that a replay only needs the
+// *decisions* this produces (already captured in the input log), never the
+// scheduling state that produced them. That's true once step (e) lands the
+// mask log - it is NOT true for step (f)'s snapshot ring: restoring a
+// snapshot mid-round brings `round.rngState` back correct (it was already
+// plain data) but would leave `thinkAt` at whatever a closure happened to
+// hold at restore time, re-thinking on a different cadence than the
+// snapshot captured - real divergence, not the cosmetic kind. So both now
+// live on `round.ai[side]` instead, plain data like every other round
+// field. The old private `frame` counter is gone entirely, not just moved -
+// `round.frame` already increments exactly once per call to the function
+// this returns (getInput() is only ever invoked from stepOnce()'s
+// non-hitstop branch in game.js, the same branch that increments
+// round.frame, once each, every time), so it was always numerically
+// identical to a private counter would have been - one less piece of state
+// to keep in sync, not just relocated.
+export function createAIController(self, opponent, rng, round, side) {
+  const state = round.ai[side];
 
   function decide(difficulty) {
-    input = emptyInput();
+    state.input = emptyInput();
+    const input = state.input;
     const dx = opponent.x - self.x;
     const dist = Math.abs(dx);
     const towardOpponent = dx > 0 ? "right" : "left";
@@ -59,7 +81,7 @@ export function createAIController(self, opponent) {
     // high floor (0.5) instead of straight multiplying difficulty so even
     // at DIFFICULTY_MIN this is a ~68% dodge instead of ~25%.
     if (opponent.state === "slide" && dist < SLIDE_REACT_RANGE) {
-      if (Math.random() < 0.5 + 0.5 * difficulty) {
+      if (rng.float() < 0.5 + 0.5 * difficulty) {
         input.jump = true;
         return;
       }
@@ -72,7 +94,7 @@ export function createAIController(self, opponent) {
       // is a fallback for missing the better answer, not a replacement for
       // it, and shouldn't make the slide trivially safe to throw into
       // either.
-      if (Math.random() < 0.35 * difficulty) {
+      if (rng.float() < 0.35 * difficulty) {
         input.block = true;
         input.crouch = true;
         return;
@@ -82,7 +104,7 @@ export function createAIController(self, opponent) {
     // punish - occasionally take the anti-air instead of just blocking/
     // waiting, so the AI actually uses the move rather than only ever
     // eating jump-ins.
-    if (opponent.state === "jump" && dist < UPPERCUT_REACT_RANGE && Math.random() < 0.35 * difficulty) {
+    if (opponent.state === "jump" && dist < UPPERCUT_REACT_RANGE && rng.float() < 0.35 * difficulty) {
       input.uppercut = true;
       return;
     }
@@ -97,8 +119,8 @@ export function createAIController(self, opponent) {
     // of a real combo string.
     const isKickPose = KICK_POSES.includes(opponent.state);
     const opponentAttacking = (PUNCH_POSES.includes(opponent.state) || isKickPose || opponent.state === "special") && opponent.stateT < 10;
-    if (opponentAttacking && dist < ATTACK_RANGE + 20 && Math.random() < 0.5 * difficulty) {
-      if (isKickPose && Math.random() < 0.6) {
+    if (opponentAttacking && dist < ATTACK_RANGE + 20 && rng.float() < 0.5 * difficulty) {
+      if (isKickPose && rng.float() < 0.6) {
         input.crouch = true;
       } else if (opponent.state !== "special") {
         input.block = true;
@@ -110,7 +132,7 @@ export function createAIController(self, opponent) {
       // Special is a thrown projectile now, not a melee move - it's just as
       // usable from across the arena as it is up close, so take the shot
       // instead of always closing distance first.
-      if (self.power >= 50 && Math.random() < 0.25 * difficulty) {
+      if (self.power >= 50 && rng.float() < 0.25 * difficulty) {
         input.special = true;
         return;
       }
@@ -118,21 +140,21 @@ export function createAIController(self, opponent) {
       // distance, not just a close-range finisher. Costs real power now, so
       // check for it first - otherwise the AI "chooses" slide and just does
       // nothing that frame once it can't afford it.
-      if (self.power >= SLIDE.cost && Math.random() < 0.15 * difficulty) {
+      if (self.power >= SLIDE.cost && rng.float() < 0.15 * difficulty) {
         input.slide = true;
         return;
       }
       input[towardOpponent] = true;
       // Rarely jump in from further out instead of always walking - jump is
       // free now, no power gate needed.
-      if (dist > ENGAGE_RANGE * 2 && Math.random() < 0.15 * difficulty) {
+      if (dist > ENGAGE_RANGE * 2 && rng.float() < 0.15 * difficulty) {
         input.jump = true;
       }
       return;
     }
 
     if (dist <= ATTACK_RANGE) {
-      const roll = Math.random();
+      const roll = rng.float();
       // Kick and special both whiff clean over a crouching opponent, guard
       // raised or not (see checkHit's crouch/blockLow kick check and
       // updateProjectiles' crouch/blockLow dodge) - throwing them anyway
@@ -183,7 +205,7 @@ export function createAIController(self, opponent) {
     // In the gap between attack range and engage range - take a pot-shot
     // with the ranged special or a slide sometimes instead of always just
     // closing in on foot.
-    const roll = Math.random();
+    const roll = rng.float();
     if (self.power >= 50 && roll < 0.2 * difficulty) {
       input.special = true;
       return;
@@ -196,14 +218,18 @@ export function createAIController(self, opponent) {
   }
 
   return function getInput() {
-    frame++;
-    if (frame >= thinkAt) {
+    // No local increment here (contrast with the old `frame++` at the top
+    // of this function) - game.js's stepOnce() already incremented
+    // round.frame before calling p2.update(...getAIInput()...), so this
+    // reads the exact same post-increment value the old private counter
+    // would have held at this same point in the call.
+    if (round.frame >= state.thinkAt) {
       const difficulty = difficultyFor(self);
       decide(difficulty);
       const min = THINK_INTERVAL_MIN / difficulty;
       const max = THINK_INTERVAL_MAX / difficulty;
-      thinkAt = frame + min + Math.floor(Math.random() * (max - min));
+      state.thinkAt = round.frame + min + Math.floor(rng.float() * (max - min));
     }
-    return input;
+    return state.input;
   };
 }

@@ -119,9 +119,23 @@ const COMBO_DAMAGE_DECAY = 0.82;
 // long the combo runs - a combo should still meaningfully punish, just not
 // linearly stack into a one-touch kill.
 const COMBO_DAMAGE_FLOOR = 0.25;
+// Design A step (b): Math.pow is banned from sim/outcome code (not a
+// bit-exact transcendental across JS engines - see tools/lint-sim.mjs's own
+// ban list once that lands) - a literal table indexed by hitIndex-1,
+// generated once from the exact formula this replaces
+// (Math.max(COMBO_DAMAGE_FLOOR, Math.pow(COMBO_DAMAGE_DECAY, hitIndex - 1))
+// for hitIndex 1..8) and verified live against it: every entry matches to
+// within 1 ulp (COMBO_DAMAGE_DECAY/COMBO_DAMAGE_FLOOR above are kept purely
+// as that derivation's documentation now, nothing in this file still reads
+// them). Entry [7] (hitIndex 8) is already the floored value
+// (Math.pow(0.82, 7) ≈ 0.249285... < 0.25) - every hitIndex beyond 8 clamps
+// to this same last entry below, same as the old Math.max floor did for any
+// n large enough to fall under 0.25 on its own.
+const COMBO_DAMAGE_SCALE = [1, 0.82, 0.6724, 0.551368, 0.45212176, 0.3707398432, 0.304006671424, 0.25];
 // hitIndex is 1-based (1 = the combo's opening hit, unscaled).
 export function computeComboDamageScale(hitIndex) {
-  return Math.max(COMBO_DAMAGE_FLOOR, Math.pow(COMBO_DAMAGE_DECAY, hitIndex - 1));
+  const idx = Math.min(Math.max(0, hitIndex - 1), COMBO_DAMAGE_SCALE.length - 1);
+  return COMBO_DAMAGE_SCALE[idx];
 }
 
 // --- Combo freeze-hold + enders -------------------------------------------
@@ -269,7 +283,7 @@ const DASH_COST = 12;
 // idle - see takeDamage's kind==="slide" branch.
 const KNOCKBACK_DURATION = 28;
 // Arc height for the knockback flight - a real launch-and-land trajectory
-// (see jumpOffset and setKnockbackMotion below) rather than the old instant
+// (see jumpOffset and enterKnockback below) rather than the old instant
 // teleport-then-freeze. Shorter than a real jump's arc (140) since this is a
 // reaction, not a voluntary leap.
 const KNOCKBACK_ARC_HEIGHT = 55;
@@ -336,8 +350,8 @@ const JUGGLE_GRAVITY = 0.55;
 // own. Time to return to the ground from a fresh launch (2v/g) is
 // ≈ 2·15/0.55 ≈ 55 frames, well inside MAX_JUGGLE_FRAMES below.
 const JUGGLE_LAUNCH_VELOCITY = 15;
-// Every relaunch after the very first hit of a sequence decays off this
-// SAME original velocity via Math.pow(DECAY, hits-1) in applyJuggleLaunch
+// Every relaunch after the very first hit of a sequence decays off this SAME
+// original velocity via JUGGLE_RELAUNCH_SCALE[hits-1] in applyJuggleLaunch
 // below - never off the previous hit's own already-decayed velocity.
 // Compounding hit-over-hit decay (each relaunch scaled down from the last
 // one, not from the original) only asymptotically approaches zero and never
@@ -346,7 +360,18 @@ const JUGGLE_LAUNCH_VELOCITY = 15;
 // for a hard cap. MAX_JUGGLE_HITS below is the actual hard stop; this just
 // makes each hit leading up to it feel less generous than the one before,
 // same shape as every real air-combo game's own proration.
+//
+// JUGGLE_RELAUNCH_DECAY is kept only as this table's own documentation now
+// (Design A step (b): no Math.pow in sim/outcome code) - the table below,
+// indexed by juggleHits-1, is the literal, verified-equal-to-within-1-ulp
+// equivalent of JUGGLE_LAUNCH_VELOCITY * Math.pow(JUGGLE_RELAUNCH_DECAY,
+// juggleHits - 1) for juggleHits 1..MAX_JUGGLE_HITS (5) - applyJuggleLaunch's
+// own `capped` branch already guarantees juggleHits never exceeds
+// MAX_JUGGLE_HITS by the time this table is read, but the lookup still
+// clamps to the last entry defensively rather than trusting that invariant
+// to hold forever.
 const JUGGLE_RELAUNCH_DECAY = 0.6;
+const JUGGLE_RELAUNCH_SCALE = [1, 0.6, 0.36, 0.216, 0.1296];
 // Hard, unconditional cap #1 (hit-count axis): the 6th hit of any single
 // juggle sequence (juggleHits > 5, i.e. hits 1-5 still launch, decayed, hit 6
 // onward never do - see applyJuggleLaunch) grants ZERO further upward
@@ -835,15 +860,52 @@ export class Fighter {
     // consumes it back to false right there - so a later, ordinary
     // (non-spiked) knockback can never accidentally inherit a stale true
     // from an earlier sequence. `hardKnockdownFrames` is the actual duration
-    // override this decides between (HARD_KNOCKDOWN_DURATION vs null, i.e.
-    // "fall back to the plain KNOCKBACK_DURATION constant") - kept as its
-    // own field rather than a second hardcoded state entry since "knockback"
-    // is reused wholesale for both a spike's hard-knockdown landing and an
-    // ordinary slide hit's much shorter one (see takeDamage's own explicit
-    // reset of this field on the slide path, the only OTHER place
-    // "knockback" ever gets entered from).
+    // override this decides between (HARD_KNOCKDOWN_DURATION vs 0, i.e.
+    // "fall back to the plain KNOCKBACK_DURATION constant" - Design A step
+    // (b): 0 rather than null, since every fighter field now has to have an
+    // explicit, always-defined default declared right here in the
+    // constructor rather than springing into existence the first time some
+    // other method happens to assign it; every reader of this field
+    // (the "knockback" entry in update()'s durations map below) was already
+    // switched from `?? KNOCKBACK_DURATION` to `|| KNOCKBACK_DURATION` to
+    // match - 0 is falsy, so the fallback still kicks in identically to how
+    // `?? KNOCKBACK_DURATION` did for a null default) - kept as its own
+    // field rather than a second hardcoded state entry since "knockback" is
+    // reused wholesale for both a spike's hard-knockdown landing and an
+    // ordinary slide hit's much shorter one.
     this.spiked = false;
-    this.hardKnockdownFrames = null;
+    this.hardKnockdownFrames = 0;
+    // --- Design A step (b): every field a Fighter instance can ever carry
+    // has to be declared here with an explicit default, full stop - these
+    // six used to spring into existence the first time some OTHER method
+    // happened to run (setKnockbackMotion/the dash branch of update()/
+    // applyParryStagger+takeDamage), which is exactly how the stale-
+    // knockbackDir teleport bug below existed in the first place: a fighter
+    // who had never yet been slide-hit this match had no knockbackDir field
+    // at all (reads as undefined, falsy - harmless), but the FIRST slide hit
+    // of the match created it and then NOTHING ever cleared it back down
+    // again - a much later juggle landing (which never itself sets
+    // knockbackDir, see the "juggled" branch of update() and its own
+    // enterKnockback(0, 0, holdFrames) call below) would silently inherit
+    // whatever direction/distance/start-x that one earlier slide hit left
+    // behind and re-enter the eased knockback arc using THAT stale data -
+    // a full-screen teleport toward a target x computed from a fight
+    // position that no longer has anything to do with where this hit
+    // actually landed. Two things fix it together: every field defaults to
+    // its real "off" value right here (so a fighter who's never been
+    // slide-hit this match behaves identically to one who has and then
+    // fully left "knockback"/"dash" - see setState's own clearing below for
+    // the second half), and the new enterKnockback() entry point (see
+    // below) is now the ONLY place any code ever assigns knockbackDir/
+    // knockbackStartX/knockbackTotal, always setting all three together, so
+    // there's no longer a window where one is fresh and the others are
+    // stale left over from a different hit.
+    this.hitstunFrames = HITSTUN_FRAMES;
+    this.knockbackStartX = 0;
+    this.knockbackDir = 0;
+    this.knockbackTotal = 0;
+    this.dashDir = 0;
+    this.dashStartX = 0;
     // Real "how long has THIS fighter been continuously off the ground"
     // counter for a voluntary jump - see the combined jump/airKick/flyingKick
     // branch of update() below for the full design. Deliberately separate
@@ -891,6 +953,47 @@ export class Fighter {
   }
 
   setState(state) {
+    // Stale-motion guard (Design A step (b), see the constructor's own big
+    // comment on the six lazily-created fields for the full bug this half
+    // fixes): knockbackDir/dashDir only ever mean anything while THIS
+    // fighter is still actually in "knockback"/"dash" - the instant either
+    // state is left, for ANY reason, the direction is zeroed right here.
+    // Combined with enterKnockback() below always setting all three
+    // knockback fields together on every real entry into "knockback" (never
+    // leaving one stale while another's fresh), this guarantees a later,
+    // unrelated entry into "knockback" that does NOT go through
+    // enterKnockback with a real dir (the juggle-landing path below passes
+    // dir 0 on purpose) can never silently inherit motion left over from a
+    // completely different, much earlier hit.
+    // Bugfix (review S5): the guard above only ever zeroed knockbackDir/
+    // dashDir themselves - knockbackStartX/knockbackTotal/hardKnockdownFrames
+    // and dashStartX kept whatever a fighter's LAST real knockback/dash left
+    // them at, forever, even after the state that reads them was long over.
+    // Every current reader is already gated on knockbackDir/dashDir/the
+    // state check (verified: update()'s "knockback"/"dash" branches both
+    // check `&& this.knockbackDir`/`&& this.dashDir` before ever touching
+    // the other three, and enterKnockback sets all four together on every
+    // real re-entry), so this was never reachable as an actual gameplay bug
+    // - but it IS a step (f) checksum hazard: two fighters who reached the
+    // identical current gameplay state by different knockback/dash
+    // histories would carry different residual values here and mismatch a
+    // future FNV checksum over zero real divergence. `hitstunFrames`
+    // deliberately does NOT join this guard, even though it can go equally
+    // stale - takeDamage (above) sets it BEFORE calling setState() for the
+    // very hit that's leaving "knockback"/"dash" (a chained combo hit can
+    // land on an already-knockback'd/dashing defender), so zeroing it here
+    // would wipe that same hit's own freshly computed value the instant
+    // setState() runs, not just some later unrelated hit's stale leftover.
+    if (this.state === "knockback" && state !== "knockback") {
+      this.knockbackDir = 0;
+      this.knockbackStartX = 0;
+      this.knockbackTotal = 0;
+      this.hardKnockdownFrames = 0;
+    }
+    if (this.state === "dash" && state !== "dash") {
+      this.dashDir = 0;
+      this.dashStartX = 0;
+    }
     this.state = state;
     this.stateT = 0;
     this.hasHit = false;
@@ -902,13 +1005,27 @@ export class Fighter {
     return true;
   }
 
-  // Called by game.js right after takeDamage sets state to "knockback" -
-  // records the launch point/direction/distance so update() can fly the
-  // fighter there over KNOCKBACK_DURATION instead of snapping instantly.
-  setKnockbackMotion(dir, total) {
+  // Single entry point for actually ENTERING "knockback" - replaces the old
+  // setKnockbackMotion(dir, total) (which only ever set the motion fields,
+  // leaving the actual this.setState("knockback") call to happen separately
+  // at each call site) plus the juggle-landing branch's own ad hoc
+  // this.hardKnockdownFrames = ...; this.setState("knockback") pair. Used by
+  // BOTH real callers now: game.js's updateSlide (an unblocked slide hit,
+  // dir/total from the push direction/SLIDE.knockback, holdFrames 0 - plain
+  // KNOCKBACK_DURATION) and this file's own "juggled" landing branch below
+  // (dir 0, total 0 - a juggle landing never has horizontal motion, see that
+  // branch's own comment - holdFrames either HARD_KNOCKDOWN_DURATION or 0
+  // depending on whether this fall was spiked). Every field this state's
+  // eased-arc read (update()'s own "knockback" branch) depends on gets set
+  // together, every single time "knockback" is entered - there is no longer
+  // any path into this state that leaves knockbackDir/knockbackStartX/
+  // knockbackTotal at whatever a PREVIOUS, unrelated hit left them at.
+  enterKnockback(dir, total, holdFrames) {
     this.knockbackStartX = this.x;
     this.knockbackDir = dir;
     this.knockbackTotal = total;
+    this.hardKnockdownFrames = holdFrames;
+    this.setState("knockback");
   }
 
   // Rising-edge detection + input-buffer bookkeeping, factored out so it can
@@ -1088,25 +1205,28 @@ export class Fighter {
         // Reuses the existing "knockback" pose/timer as the landing
         // recovery - a real hard-knockdown beat (this engine's own closest
         // thing to one already), not a straight-back-to-idle teleport, and
-        // free (no new art/state-duration wiring needed): knockbackDir is
-        // never set here, so the eased x-flight branch in the shared
-        // durations block below (`if (this.state === "knockback" &&
-        // this.knockbackDir)`) is simply never entered - this plays as a
-        // pure landing-recovery hold in place, not a knockback slide.
+        // free (no new art/state-duration wiring needed): enterKnockback is
+        // called with dir 0 (see its own comment above) so the eased
+        // x-flight branch in the shared durations block below (`if
+        // (this.state === "knockback" && this.knockbackDir)`) is never
+        // entered - this plays as a pure landing-recovery hold in place, not
+        // a knockback slide.
         //
         // A SPIKED fall (see applyJuggleSpike/isJuggleSpike above) earns the
         // longer HARD_KNOCKDOWN_DURATION hold instead of this same branch's
-        // usual plain fallback - `this.spiked` is consumed (reset false)
-        // right here, the one and only read site, so it can never leak into
-        // a later, unrelated ordinary landing. lastEvent fires exactly once,
-        // the frame a spiked fall actually ends - see handleSounds in
-        // game.js, which reacts to it with the real ground-impact shake/
-        // thud/FX a slam this hard deserves, distinct from (and a beat
-        // after) whatever hit did the spiking itself up in the air.
-        this.hardKnockdownFrames = this.spiked ? HARD_KNOCKDOWN_DURATION : null;
+        // usual plain fallback (0 - "use KNOCKBACK_DURATION", see
+        // enterKnockback's own comment) - `this.spiked` is consumed (reset
+        // false) right here, the one and only read site, so it can never
+        // leak into a later, unrelated ordinary landing. lastEvent fires
+        // exactly once, the frame a spiked fall actually ends - see
+        // handleSounds in game.js, which reacts to it with the real
+        // ground-impact shake/thud/FX a slam this hard deserves, distinct
+        // from (and a beat after) whatever hit did the spiking itself up in
+        // the air.
+        const holdFrames = this.spiked ? HARD_KNOCKDOWN_DURATION : 0;
         this.spiked = false;
-        if (this.hardKnockdownFrames) this.lastEvent = "hard-knockdown-land";
-        this.setState("knockback");
+        if (holdFrames) this.lastEvent = "hard-knockdown-land";
+        this.enterKnockback(0, 0, holdFrames);
         return;
       }
       return;
@@ -1142,13 +1262,16 @@ export class Fighter {
         // (unreachable in normal play) case nothing set it yet.
         hitstun: this.hitstunFrames ?? HITSTUN_FRAMES,
         slide: SLIDE.duration,
-        // this.hardKnockdownFrames is only ever non-null for the frames right
+        // this.hardKnockdownFrames is only ever non-zero for the frames right
         // after a spiked juggle lands (see the "juggled" branch's own landing
-        // check above, and takeDamage's slide branch below for the only other
-        // place this ever gets explicitly cleared back to null) - falls back
-        // to the plain constant for every ordinary knockback (a ground slide
-        // hit, or a juggle that fell out without ever being spiked).
-        knockback: this.hardKnockdownFrames ?? KNOCKBACK_DURATION,
+        // check above, and enterKnockback's every other call site, which all
+        // pass 0 here) - `||`, not `??`: 0 is the field's own real default
+        // now (see the constructor), not a sentinel, so falling back to the
+        // plain constant on 0 is exactly the intended "use
+        // KNOCKBACK_DURATION" reading, same as `?? KNOCKBACK_DURATION` gave
+        // for a null default before Design A step (b) required every field
+        // to have an explicit, always-defined value.
+        knockback: this.hardKnockdownFrames || KNOCKBACK_DURATION,
         uppercut: UPPERCUT.duration,
         dash: DASH_DURATION,
       };
@@ -1159,7 +1282,7 @@ export class Fighter {
       }
       // Real launch-and-land flight instead of the old instant teleport -
       // eased out (fast launch, decelerating into the landing) toward the
-      // total distance set by setKnockbackMotion, driven off absolute t so
+      // total distance set by enterKnockback, driven off absolute t so
       // there's no drift/accumulation error frame to frame.
       if (this.state === "knockback" && this.knockbackDir) {
         const t = Math.min(1, this.stateT / KNOCKBACK_DURATION);
@@ -1675,8 +1798,13 @@ export class Fighter {
       // whatever this.juggleVY happens to already be - see
       // JUGGLE_RELAUNCH_DECAY's own comment above for why compounding decay
       // off the previous hit's already-decayed value would only trend
-      // toward (never reach) zero on its own.
-      this.juggleVY = JUGGLE_LAUNCH_VELOCITY * Math.pow(JUGGLE_RELAUNCH_DECAY, this.juggleHits - 1);
+      // toward (never reach) zero on its own. Table lookup, not
+      // Math.pow(JUGGLE_RELAUNCH_DECAY, ...) - see JUGGLE_RELAUNCH_SCALE's
+      // own comment above; the `capped` branch above already guarantees
+      // juggleHits <= MAX_JUGGLE_HITS here, but the index is still clamped
+      // defensively rather than trusting that.
+      const scaleIdx = Math.min(this.juggleHits - 1, JUGGLE_RELAUNCH_SCALE.length - 1);
+      this.juggleVY = JUGGLE_LAUNCH_VELOCITY * JUGGLE_RELAUNCH_SCALE[scaleIdx];
     }
     // A fresh launch starts from ground level; a relaunch keeps whatever
     // height they were already at (mid-air, by definition, since relaunch
@@ -1848,16 +1976,31 @@ export class Fighter {
         } else {
           this.applyJuggleLaunch();
         }
+      } else if (kind === "slide") {
+        // Bare/placeholder entry - dir 0, total 0, holdFrames 0 (plain
+        // KNOCKBACK_DURATION, not a spike's hard-knockdown - a spike can
+        // only ever come from the juggle-launch branch above, never a
+        // grounded slide). enterKnockback (not a raw setState("knockback"))
+        // specifically so hardKnockdownFrames also gets reset to 0 right
+        // here, same reasoning as knockbackDir's own clearing above: a
+        // fighter who took a SPIKED juggle landing earlier in the match and
+        // has since long left "knockback" would otherwise still be carrying
+        // that stale HARD_KNOCKDOWN_DURATION into this completely unrelated
+        // plain slide hit (the exact bug this old code's own comment used to
+        // guard against with an explicit `this.hardKnockdownFrames = null`
+        // right here - enterKnockback now does that unconditionally, for
+        // every field, on every entry, rather than needing a kind-specific
+        // special case). game.js's updateSlide calls enterKnockback again
+        // right after this returns (with the REAL push direction/distance)
+        // for every unblocked slide hit that didn't just KO this fighter -
+        // takeDamage's own KO clamp below can still override this to "ko"
+        // before that second call ever runs, which is exactly why this
+        // method doesn't attempt to set the real motion itself: it has no
+        // way to know here whether this hit was fatal, and re-entering
+        // "knockback" over an already-"ko"'d fighter would be a real bug.
+        this.enterKnockback(0, 0, 0);
       } else {
-        // A spike's own much longer HARD_KNOCKDOWN_DURATION hold (see the
-        // durations map above) must never leak into an unrelated LATER
-        // slide hit that happens to reuse this same "knockback" state
-        // string - explicitly cleared here, the only other place
-        // "knockback" is ever entered from (the "juggled" branch's own
-        // landing check is the other, and always assigns this field fresh
-        // one way or the other on every landing - see its own comment).
-        if (kind === "slide") this.hardKnockdownFrames = null;
-        this.setState(kind === "slide" ? "knockback" : "hitstun");
+        this.setState("hitstun");
       }
       this.lastEvent = "hit-taken";
       this.lastHitKind = kind;

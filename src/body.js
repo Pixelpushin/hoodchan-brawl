@@ -29,10 +29,24 @@ const ARENA_BACKGROUNDS = [
 ];
 let currentArenaIndex = 0;
 
-// Called once per fight (see main.js) so the backdrop stays fixed for the
-// whole match instead of changing mid-fight.
-export function pickRandomArena() {
-  currentArenaIndex = Math.floor(Math.random() * ARENA_BACKGROUNDS.length);
+// Called once per match (see main.js's runMatch) so the backdrop stays
+// fixed for the whole match instead of changing mid-fight. `seed` is a raw
+// uint32 from the cosmetic RNG stream (derive(matchSeed, "arena") - see
+// rng.js/main.js), not a pre-modded index - the mod-by-length lives here
+// since ARENA_BACKGROUNDS.length is this module's own private detail, not
+// something a caller outside body.js should need to know. Required, not
+// defaulted (review N5): a `= 0` default here doesn't just avoid
+// Math.random() (the actual goal - see PLAN-2026-09-engine-rebuild.md
+// Design A step (c)'s "Grep proof", every real call site always passes a
+// derived seed), it also silently turns "a future caller forgot the seed
+// argument" into "every match quietly plays on arena 0" - a real bug with
+// no error, no stack trace, nothing but a suspiciously repetitive
+// backdrop. Throwing surfaces that mistake immediately instead.
+export function pickRandomArena(seed) {
+  if (typeof seed !== "number") {
+    throw new Error("pickRandomArena requires a numeric seed (derive(matchSeed, \"arena\")) - none was passed");
+  }
+  currentArenaIndex = seed % ARENA_BACKGROUNDS.length;
 }
 
 const BLOOD_SPOTS = [
@@ -536,8 +550,20 @@ export function drawBloodSpot(ctx, decal) {
   ctx.restore();
 }
 
-export function pickBloodSpotVariant() {
-  return Math.floor(Math.random() * BLOOD_SPOTS.length);
+// `rand` is a [0,1) float from the cosmetic RNG stream (game.js's fxRng -
+// see rng.js) rather than this function calling Math.random() itself, same
+// reasoning as pickRandomArena above: blood FX is gated behind
+// isBloodUnlocked() (see game.js), so a player with blood off must consume
+// zero draws from the shared cosmetic stream, or their FX setting would
+// silently desync a future remote peer's copy of it. Required, not
+// defaulted (review N5, same reasoning as pickRandomArena above) - a
+// forgotten `rand` argument should throw, not silently always pick variant
+// 0.
+export function pickBloodSpotVariant(rand) {
+  if (typeof rand !== "number") {
+    throw new Error("pickBloodSpotVariant requires a numeric rand (fxRng.float()) - none was passed");
+  }
+  return Math.floor(rand * BLOOD_SPOTS.length);
 }
 
 // Brief impact burst at the hit location - plays through its 5 frames once
@@ -594,8 +620,13 @@ export function drawBloodSplatExtra(ctx, x, y, variant, rotation, scale) {
   ctx.restore();
 }
 
-export function pickBloodSplatVariant() {
-  return Math.floor(Math.random() * BLOOD_SPLAT_EXTRA_VARIANTS);
+// Same cosmetic-stream contract as pickBloodSpotVariant above, including the
+// required-not-defaulted `rand` argument (review N5).
+export function pickBloodSplatVariant(rand) {
+  if (typeof rand !== "number") {
+    throw new Error("pickBloodSplatVariant requires a numeric rand (fxRng.float()) - none was passed");
+  }
+  return Math.floor(rand * BLOOD_SPLAT_EXTRA_VARIANTS);
 }
 
 // Traveling projectile fired by the ranged special (game.js owns its

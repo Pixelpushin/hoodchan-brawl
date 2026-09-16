@@ -12,6 +12,7 @@ import { fetchFighterStats, submitAiMatchComplete } from "./api.js";
 import { initGamepadDebugOverlay } from "./gamepad.js";
 import { initGamepadNav } from "./gamepad-nav.js";
 import { renderKOShareCard, shareKOImage, castKOImage } from "./share-card.js";
+import { randomSeed, derive } from "./rng.js";
 
 initGamepadDebugOverlay();
 initGamepadNav();
@@ -923,6 +924,26 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
   let roundNum = 1;
   let drawStreak = 0;
 
+  // Design A step c: one real (crypto-sourced) seed for the whole match,
+  // fanned out per-stream/per-round via derive() (see rng.js and game.js's
+  // round-rng/fxRng wiring) instead of every consumer calling Math.random()
+  // independently. Local-only for now - once the lobby exists (Phase 1+)
+  // this becomes the value both PVP peers agree on instead of each device
+  // rolling its own, which is the whole reason to seed it centrally here
+  // rather than letting createGame default it per round. Logged once per
+  // match (not per round) so a bug report can be reproduced by replaying
+  // this exact seed.
+  const matchSeed = randomSeed();
+  console.debug("[brawl] matchSeed:", matchSeed);
+  // Arena is picked once for the whole match (matches pickRandomArena's own
+  // "called once per fight" doc comment in body.js - previously this was
+  // called every round below, re-rolling the backdrop mid-match, which
+  // never matched that comment) and derived from matchSeed alone (no round
+  // index - see PLAN-2026-09-engine-rebuild.md Design A's "RNG, input,
+  // loop, snapshot" section) so a future remote peer computing the same
+  // derive() lands on the same arena without it ever crossing the wire.
+  pickRandomArena(derive(matchSeed, "arena"));
+
   while (wins.p1 < ROUNDS_TO_WIN && wins.p2 < ROUNDS_TO_WIN) {
     if (practiceMode) {
       document.getElementById("round-info").textContent = "PRACTICE MODE";
@@ -932,7 +953,6 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
 
     const p1 = new Fighter(data1, 200, 1);
     const p2 = new Fighter(data2, 600, -1);
-    pickRandomArena();
     // Bars would otherwise still show the previous round's ending values
     // (e.g. the loser's empty health bar) through the whole next countdown.
     resetBars();
@@ -966,6 +986,9 @@ async function runMatch(data1, data2, canvas, ctx, { p2AI = false, practiceMode 
         timeLimit,
         p2AI,
         practiceMode,
+        matchSeed,
+        roundIndex: roundNum,
+        drawStreak,
         onEnd: (w) => {
           stopGame();
           resolve(w);
