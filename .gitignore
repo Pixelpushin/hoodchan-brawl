@@ -1,5 +1,6 @@
 .vercel
 version.json
+src/engine-version.js
 node_modules/
 
 # All sound effects are paid Splice samples, and all music tracks are Suno-

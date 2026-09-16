@@ -13,6 +13,7 @@ import { ethers } from "ethers";
 
 import { installFakeRedis } from "./_helpers/fake-redis.js";
 import { makeReq, call } from "./_helpers/http.js";
+import { mintFakeSession } from "./_helpers/fake-session.js";
 import { buildResultMessage as clientBuildResultMessage } from "../src/lobby.js";
 
 const require = createRequire(import.meta.url);
@@ -20,22 +21,48 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const REDIS_PATH = require.resolve(path.join(root, "api/_lib/redis.js"));
 const RATE_LIMIT_PATH = require.resolve(path.join(root, "api/_lib/rate-limit.js"));
+const AUTH_PATH = require.resolve(path.join(root, "api/_lib/auth.js"));
 const COMPLETE_PATH = require.resolve(path.join(root, "api/lobby/complete.js"));
 
-// Fresh fake Redis + a fresh require of complete.js per test, so rate-limit
-// counters, sigused: keys, and lobby state from one test never leak into
-// another (rate-limit.js and complete.js both destructure redis.js's exports
-// at require time, so both must be re-required after the fake is installed -
-// same reasoning as test/rate-limit.test.mjs's freshRateLimit()).
+// api/lobby/complete.js now requires a session (Authorization: Bearer, see
+// api/_lib/auth.js) whose wallet matches the signing wallet, on top of the
+// EIP-191 signature it already verified - every test below needs
+// SESSION_SECRET set so mintFakeSession's HMAC matches what the route
+// verifies with.
+process.env.SESSION_SECRET = "test-lobby-complete-secret";
+
+// Fresh fake Redis + a fresh require of complete.js (and auth.js, which it
+// now depends on for session gating) per test, so rate-limit counters,
+// sigused: keys, sess: records, and lobby state from one test never leak
+// into another (rate-limit.js/auth.js/complete.js all destructure redis.js's
+// exports at require time, so all must be re-required after the fake is
+// installed - same reasoning as test/rate-limit.test.mjs's freshRateLimit()).
 function freshComplete() {
   const fake = installFakeRedis(require, root);
   delete require.cache[RATE_LIMIT_PATH];
+  delete require.cache[AUTH_PATH];
   delete require.cache[COMPLETE_PATH];
   const complete = require(COMPLETE_PATH);
-  return { complete, fake };
+  return { complete, fake, reqFrom: makeReqFrom(fake) };
 }
 
-const reqFrom = (ip, body) => makeReq({ headers: { "x-vercel-forwarded-for": ip }, body });
+// Builds a reqFrom(ip, body) bound to `fake`'s store: when `body.wallet` is
+// present, a session is auto-minted for exactly that wallet and attached as
+// Authorization: Bearer - this is what every legitimate caller looks like
+// now that api/lobby/complete.js requires session.wallet to equal the
+// signing wallet (403 SESSION_MISMATCH otherwise, see the dedicated test
+// below). Tests that need a MISMATCHED session build their own request
+// instead of using this helper.
+function makeReqFrom(fake) {
+  return (ip, body) => {
+    const headers = { "x-vercel-forwarded-for": ip };
+    if (body?.wallet) {
+      const session = mintFakeSession(fake, { wallet: body.wallet, tokenId: 0 });
+      headers.authorization = `Bearer ${session.token}`;
+    }
+    return makeReq({ headers, body });
+  };
+}
 
 const ROOM = "ABC123";
 const LOBBY_KEY = `lobby:${ROOM}`;
@@ -101,7 +128,7 @@ test("buildResultMessage: client (src/lobby.js) and server (api/lobby/complete.j
 });
 
 test("missing signature is rejected (400)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const fields = baseFields();
   const body = { ...fields }; // no `signature`
@@ -110,7 +137,7 @@ test("missing signature is rejected (400)", async () => {
 });
 
 test("signature from the wrong signer is rejected (403 INVALID_SIGNATURE)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const fields = baseFields({ wallet: A }); // claims to be A...
   const body = await signedBody(complete, walletB, fields); // ...but B actually signed it
@@ -120,7 +147,7 @@ test("signature from the wrong signer is rejected (403 INVALID_SIGNATURE)", asyn
 });
 
 test("stale issuedAt is rejected (403 INVALID_TIMESTAMP)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const staleIssuedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
   const fields = baseFields({ wallet: A, issuedAt: staleIssuedAt });
@@ -131,7 +158,7 @@ test("stale issuedAt is rejected (403 INVALID_TIMESTAMP)", async () => {
 });
 
 test("a signature can't be replayed (409 REPLAYED)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const fields = baseFields({ wallet: A });
   const body = await signedBody(complete, walletA, fields);
@@ -146,7 +173,7 @@ test("a signature can't be replayed (409 REPLAYED)", async () => {
 });
 
 test("a wallet that isn't in the lobby is rejected (403 NOT_A_PARTICIPANT)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const fields = baseFields({ wallet: walletC.address.toLowerCase() });
   const body = await signedBody(complete, walletC, fields);
@@ -155,8 +182,33 @@ test("a wallet that isn't in the lobby is rejected (403 NOT_A_PARTICIPANT)", asy
   assert.equal(res.body.code, "NOT_A_PARTICIPANT");
 });
 
-test("first submission is recorded but not finalized: recorded:false, waitingFor the other side", async () => {
+test("no session at all is rejected (401 UNAUTHENTICATED)", async () => {
   const { complete, fake } = freshComplete();
+  seedLobby(fake);
+  const body = await signedBody(complete, walletA, baseFields({ wallet: A }));
+  const res = await call(complete, makeReq({ headers: { "x-vercel-forwarded-for": "1.1.1.20" }, body }));
+  assert.equal(res.status, 401);
+  assert.equal(res.body.code, "UNAUTHENTICATED");
+});
+
+test("a session for a DIFFERENT wallet than the signer is rejected (403 SESSION_MISMATCH), even with a perfectly valid signature", async () => {
+  const { complete, fake } = freshComplete();
+  seedLobby(fake);
+  const body = await signedBody(complete, walletA, baseFields({ wallet: A }));
+  // The session belongs to B, not A - B is even a real participant (p2) in
+  // this same lobby, so this isn't just "unknown session", it's specifically
+  // "the wrong player's session was used to submit A's signed result".
+  const session = mintFakeSession(fake, { wallet: B, tokenId: 165 });
+  const res = await call(
+    complete,
+    makeReq({ headers: { "x-vercel-forwarded-for": "1.1.1.21", authorization: `Bearer ${session.token}` }, body }),
+  );
+  assert.equal(res.status, 403);
+  assert.equal(res.body.code, "SESSION_MISMATCH");
+});
+
+test("first submission is recorded but not finalized: recorded:false, waitingFor the other side", async () => {
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
   const fields = baseFields({ wallet: A });
   const body = await signedBody(complete, walletA, fields);
@@ -170,7 +222,7 @@ test("first submission is recorded but not finalized: recorded:false, waitingFor
 });
 
 test("both sides submit and agree: recorded:true, adapter-namespaced stats written, mintqueue entry exists", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
 
   const p1Body = await signedBody(complete, walletA, baseFields({ wallet: A }));
@@ -208,7 +260,7 @@ test("both sides submit and agree: recorded:true, adapter-namespaced stats writt
 });
 
 test("both sides submit but disagree: disputed, no stats or mintqueue writes", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
 
   const p1Body = await signedBody(complete, walletA, baseFields({ wallet: A, winnerId: 14, loserId: 165 }));
@@ -229,7 +281,7 @@ test("both sides submit but disagree: disputed, no stats or mintqueue writes", a
 });
 
 test("a completed room is 409", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake, { status: "complete" });
   const body = await signedBody(complete, walletA, baseFields({ wallet: A }));
   const res = await call(complete, reqFrom("1.1.1.11", body));
@@ -244,7 +296,9 @@ test("CAS interference: a racing write between GET and compare-and-set is retrie
   // captured).
   const fake = installFakeRedis(require, root);
   delete require.cache[RATE_LIMIT_PATH];
+  delete require.cache[AUTH_PATH];
   delete require.cache[COMPLETE_PATH];
+  const reqFrom = makeReqFrom(fake);
   seedLobby(fake);
 
   // First compare-and-set call in the CAS loop loses a race: another writer
@@ -275,7 +329,7 @@ test("CAS interference: a racing write between GET and compare-and-set is retrie
 });
 
 test("agreed winner/loser but mismatched scores is disputed, not silently recorded with p1's numbers (S3)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
 
   const p1Body = await signedBody(complete, walletA, baseFields({ wallet: A, p1Score: 3, p2Score: 1 }));
@@ -296,7 +350,7 @@ test("agreed winner/loser but mismatched scores is disputed, not silently record
 });
 
 test("finalization can only happen once, even across N concurrently-signed submissions of the same agreeing side (B1)", async () => {
-  const { complete, fake } = freshComplete();
+  const { complete, fake, reqFrom } = freshComplete();
   seedLobby(fake);
 
   // p1 submits once, normally.

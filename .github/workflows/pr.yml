@@ -1,0 +1,30 @@
+name: PR checks
+
+# Same test gate as deploy.yml's "test" job, run on pull requests so a
+# broken build never even reaches main. See deploy.yml for why each step
+# exists - this file intentionally mirrors it rather than sharing a
+# reusable workflow, to keep both files readable standalone.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - run: npm test
+
+      - run: node scripts/test-lobby-ownership.mjs --offline

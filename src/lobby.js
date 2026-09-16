@@ -16,9 +16,11 @@
 //   initCommunityBar fetches GET /api/bar once, renders progress + milestones.
 //   Handles 404/network errors gracefully (shows 0, doesn't throw).
 
-import { signMessage } from "./wallet.js";
+import { signMessage, getSession, getConnectedAccount, connectWallet } from "./wallet.js";
+import { activeAdapter } from "./adapters/index.js";
 
 const POLL_INTERVAL_MS = 2000;
+const HEARTBEAT_INTERVAL_MS = 10000;
 
 let _onMatchReady = null; // set by initLobby({ onMatchReady })
 let _onLobbyError = null; // set by initLobby({ onLobbyError }) - room gone while in fighter select
@@ -26,6 +28,107 @@ let _pollTimer = null;
 let _pollRoomCode = null;
 let _pollSide = null;     // 'p1' | 'p2'
 let _connectedNotified = false; // "connected" is announced once per room; polling continues until "ready"
+
+// Most recently minted/reused session (see _ensureLobbySession) - reused for
+// poll's optional Authorization header and for the heartbeat, instead of
+// re-deriving one on every 2s poll tick or 10s heartbeat tick. Reflects
+// whichever tokenId was last sessioned: the wallet's first owned token at
+// create/initial-join time, then the ACTUALLY chosen fighter's tokenId once
+// lobbyRegisterFighter re-sessions at register time (see its doc comment).
+let _activeSession = null;
+
+let _heartbeatTimer = null;
+let _heartbeatFrame = 0;
+
+// The engine build this client was served - sent as `engineVersion` on
+// create/join so the server can refuse a stale client with 426 rather than
+// starting a match two different engine builds disagree about the rules of
+// (see api/lobby/join.js's ENGINE_VERSION_MISMATCH). Loaded via a dynamic
+// import with its own catch, per the spec, so a repo state where
+// src/engine-version.js doesn't exist (or fails to load) never blocks the
+// lobby flow - engineVersion is just omitted, and the server's own gate is
+// a no-op when a room has no engineVersion stamped either.
+let _engineVersion = null;
+import("./engine-version.js")
+  .then((mod) => { _engineVersion = mod?.ENGINE_VERSION ?? null; })
+  .catch(() => {});
+
+// Turns a failed fetch's {status, body} into copy a player should actually
+// see, for the two status codes that mean something specific here - every
+// other status falls back to the server's own `error` message (or a plain
+// "status <code>").
+function _friendlyError(status, body) {
+  if (status === 401) return "Your session expired - reconnect your wallet and try again.";
+  if (status === 426) return "New version available, reload";
+  return body?.error ?? `status ${status}`;
+}
+
+async function _throwFriendly(res) {
+  const body = await res.json().catch(() => ({}));
+  throw new Error(_friendlyError(res.status, body));
+}
+
+// Establishes (or reuses - see src/wallet.js's getSession sessionStorage
+// cache) a backend session (POST /api/auth/session) for this device's
+// connected wallet, prompting a wallet connection first if none is active
+// yet. `tokenId` is optional:
+//   - omitted (create, and the guest's initial pre-fighter-select join):
+//     the wallet's FIRST owned token is used as a placeholder, just so the
+//     session has SOME real, currently-owned token to bind to - the room
+//     doesn't care which token created/pre-joined it, only the eventually
+//     REGISTERED fighter matters for the match itself.
+//   - provided (lobbyRegisterFighter, at actual fighter-select register
+//     time): re-sessions for that exact tokenId. getSession() caches per
+//     (wallet, tokenId), so a different tokenId than the placeholder always
+//     mints a fresh session here rather than reusing the placeholder one.
+async function _ensureLobbySession(tokenId) {
+  let address = await getConnectedAccount().catch(() => null);
+  if (!address) {
+    address = await connectWallet(activeAdapter.config.chain);
+  }
+  let effectiveTokenId = tokenId;
+  if (effectiveTokenId === undefined || effectiveTokenId === null) {
+    const owned = await activeAdapter.fetchWalletTokenIds(address).catch(() => []);
+    if (!owned?.length) {
+      throw new Error(`Connect a wallet that holds a ${activeAdapter.config.unitName} to play online.`);
+    }
+    effectiveTokenId = owned[0];
+  }
+  const session = await getSession({ tokenId: effectiveTokenId, adapter: activeAdapter.config.key });
+  _activeSession = session;
+  return session;
+}
+
+function _authHeader(session) {
+  return { Authorization: `Bearer ${session.token}` };
+}
+
+// Liveness ping for a PVP match in progress (see api/match/heartbeat.js) -
+// started once this device reaches fighter select for a PVP room, every
+// 10s, stopped on exit (closeLobby, or the match result being submitted -
+// see lobbyComplete below). `frame` is a local tick counter, not yet a real
+// synced simulation frame - the rollback netcode that would give this a
+// true meaning is later engine-rebuild work (see
+// docs/PLAN-2026-09-engine-rebuild.md); this only needs to prove liveness.
+function _startHeartbeat(roomCode) {
+  _stopHeartbeat();
+  _heartbeatFrame = 0;
+  _heartbeatTimer = setInterval(() => {
+    if (!_activeSession) return;
+    fetch("/api/match/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ..._authHeader(_activeSession) },
+      body: JSON.stringify({ roomCode, frame: _heartbeatFrame++ }),
+    }).catch((err) => console.warn("[lobby] heartbeat failed", err));
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function _stopHeartbeat() {
+  if (_heartbeatTimer) {
+    clearInterval(_heartbeatTimer);
+    _heartbeatTimer = null;
+  }
+}
 
 // ===== Lobby init (called once from main.js) =====
 
@@ -76,14 +179,15 @@ export function initLobby({ onMatchReady, onLobbyError } = {}) {
   lobbyCreateBtn?.addEventListener("click", async () => {
     _setLobbyLoading(true);
     try {
-      const res = await fetch("/api/lobby/create", { method: "POST" });
-      if (!res.ok) throw new Error(`status ${res.status}`);
+      const session = await _ensureLobbySession();
+      const res = await fetch("/api/lobby/create", { method: "POST", headers: _authHeader(session) });
+      if (!res.ok) await _throwFriendly(res);
       const { roomCode } = await res.json();
       _showLobbyWaiting(roomCode);
       _startPolling(roomCode, "p1");
     } catch (err) {
       console.error("[lobby] create failed", err);
-      _showLobbyError("Couldn't create room. Try again.");
+      _showLobbyError(err.message || "Couldn't create room. Try again.");
       _setLobbyLoading(false);
     }
   });
@@ -93,15 +197,13 @@ export function initLobby({ onMatchReady, onLobbyError } = {}) {
     if (!code) { lobbyCodeInput?.focus(); return; }
     _setLobbyLoading(true);
     try {
+      const session = await _ensureLobbySession();
       const res = await fetch("/api/lobby/join", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomCode: code }),
+        headers: { "Content-Type": "application/json", ..._authHeader(session) },
+        body: JSON.stringify({ roomCode: code, engineVersion: _engineVersion ?? undefined }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `status ${res.status}`);
-      }
+      if (!res.ok) await _throwFriendly(res);
       // The server decides which slot this device is; don't assume p2.
       const { slot } = await res.json().catch(() => ({}));
       _showLobbyJoined();
@@ -137,6 +239,7 @@ export function initLobby({ onMatchReady, onLobbyError } = {}) {
 
 export function closeLobby() {
   _stopPolling();
+  _stopHeartbeat();
   document.getElementById("lobby-modal")?.classList.add("hidden");
   _resetLobbyUI();
   // Clear the ?room= param from the URL when the lobby is dismissed.
@@ -150,17 +253,25 @@ export function getCurrentRoomCode() {
   return _pollRoomCode;
 }
 
-// Called from main.js readyBtn click when _pvpMode is active.
+// Starts the 10s match/heartbeat ping (see api/match/heartbeat.js) for the
+// current room - called from main.js once this device reaches fighter
+// select for a PVP room. A no-op if there's no active room to heartbeat for.
+export function startLobbyHeartbeat() {
+  if (_pollRoomCode) _startHeartbeat(_pollRoomCode);
+}
+
+// Called from main.js readyBtn click when _pvpMode is active. Re-sessions
+// for the ACTUALLY chosen fighter's tokenId (see _ensureLobbySession's doc
+// comment) - this is the point where the placeholder session minted at
+// create/initial-join time gets replaced with the real one.
 export async function lobbyRegisterFighter({ side, tokenId, walletAddress }) {
+  const session = await _ensureLobbySession(tokenId);
   const res = await fetch("/api/lobby/join", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ roomCode: _pollRoomCode, side, tokenId, wallet: walletAddress }),
+    headers: { "Content-Type": "application/json", ..._authHeader(session) },
+    body: JSON.stringify({ roomCode: _pollRoomCode, side, tokenId, wallet: walletAddress, engineVersion: _engineVersion ?? undefined }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? `status ${res.status}`);
-  }
+  if (!res.ok) await _throwFriendly(res);
   // Continue or start polling for ready state after fighter registration.
   if (_pollRoomCode) _startPolling(_pollRoomCode, _pollSide ?? side);
 }
@@ -201,18 +312,26 @@ export function buildResultMessage({ roomCode, winnerId, loserId, p1Score, p2Sco
 // error, etc).
 export async function lobbyComplete({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet }) {
   _stopPolling();
+  _stopHeartbeat(); // match is over - exiting the live-match phase
   const issuedAt = new Date().toISOString();
   const message = buildResultMessage({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet, issuedAt });
   try {
     const signature = await signMessage(wallet, message);
+    // Reuses _activeSession (the session for this device's REGISTERED
+    // fighter, set by lobbyRegisterFighter's _ensureLobbySession call) -
+    // api/lobby/complete.js requires session.wallet === the signing wallet
+    // (403 SESSION_MISMATCH otherwise), so this must be the same wallet as
+    // `wallet` above, which it always is in the normal flow.
+    const headers = { "Content-Type": "application/json" };
+    if (_activeSession) Object.assign(headers, _authHeader(_activeSession));
     const res = await fetch("/api/lobby/complete", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ roomCode, winnerId, loserId, p1Score, p2Score, roundsPlayed, wallet, issuedAt, signature }),
     });
     const responseBody = await res.json().catch(() => ({}));
     if (!res.ok) {
-      return { recorded: false, error: responseBody.error || `status ${res.status}` };
+      return { recorded: false, error: _friendlyError(res.status, responseBody) };
     }
     return {
       recorded: !!responseBody.recorded,
@@ -305,15 +424,13 @@ function _showLobbyWaiting(roomCode) {
 async function _autoJoin(roomCode) {
   _setLobbyLoading(true);
   try {
+    const session = await _ensureLobbySession();
     const res = await fetch("/api/lobby/join", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomCode }),
+      headers: { "Content-Type": "application/json", ..._authHeader(session) },
+      body: JSON.stringify({ roomCode, engineVersion: _engineVersion ?? undefined }),
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `status ${res.status}`);
-    }
+    if (!res.ok) await _throwFriendly(res);
     const { slot } = await res.json().catch(() => ({}));
     _showLobbyJoined();
     _startPolling(roomCode, slot === "p1" ? "p1" : "p2");
@@ -351,7 +468,12 @@ function _stopPolling() {
 async function _poll() {
   if (!_pollRoomCode) return;
   try {
-    const res = await fetch(`/api/lobby/poll?roomCode=${encodeURIComponent(_pollRoomCode)}`);
+    // Optional on poll (see api/lobby/poll.js) - reuses whatever session is
+    // already active rather than minting/prompting one on every 2s tick;
+    // a missing session just means this poll won't see full wallets for a
+    // room this device is itself a participant in.
+    const headers = _activeSession ? _authHeader(_activeSession) : {};
+    const res = await fetch(`/api/lobby/poll?roomCode=${encodeURIComponent(_pollRoomCode)}`, { headers });
     if (res.status === 404) {
       // Room expired or doesn't exist.
       _stopPolling();
